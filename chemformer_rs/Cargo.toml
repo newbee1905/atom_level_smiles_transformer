@@ -1,5 +1,5 @@
 [package]
-name = "smiles_tokenizer"
+name = "chemformer_rs"
 version = "0.1.0"
 edition = "2024"
 
@@ -21,7 +21,7 @@ rocksdb = "0.24.0"
 lazy-regex = { version = "3.4.2", features = ["perf"] }
 
 [lib]
-name = "smiles_tokenizer"
+name = "chemformer_rs"
 crate-type = ["cdylib"]
 
 [profile.release]

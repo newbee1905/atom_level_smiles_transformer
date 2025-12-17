@@ -742,7 +742,7 @@ impl RocksDBVocabBuilder {
 
 /// Legacy function for backward compatibility
 #[pyfunction]
-fn build_vocabulary(smiles_list: Vec<String>) -> (Vec<String>, Vec<(String, usize)>) {
+pub fn build_vocabulary(smiles_list: Vec<String>) -> (Vec<String>, Vec<(String, usize)>) {
 	let special_tokens = vec![
 		"<UNK>".to_string(),
 		"<PAD>".to_string(),
@@ -780,13 +780,4 @@ fn build_vocabulary(smiles_list: Vec<String>) -> (Vec<String>, Vec<(String, usiz
 	let top_tokens: Vec<(String, usize)> = token_freq.into_iter().take(10).collect();
 
 	(sorted_vocab, top_tokens)
-}
-
-#[pymodule]
-fn smiles_tokenizer(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
-	m.add_class::<SMILESTokenizer>()?;
-	m.add_class::<RocksDBVocabBuilder>()?;
-	m.add_function(wrap_pyfunction!(build_vocabulary, m)?)?;
-
-	Ok(())
 }

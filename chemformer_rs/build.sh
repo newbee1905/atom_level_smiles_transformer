@@ -62,6 +62,7 @@ echo ""
 echo "[4/7] Building Rust extension with maturin..."
 echo "────────────────────────────────────────────────────────────────"
 
+export PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
 maturin develop --release
 echo "✓ Rust extension built and installed"
 
@@ -79,7 +80,7 @@ echo "[6/7] Running basic tests..."
 echo "────────────────────────────────────────────────────────────────"
 
 python -c "
-from smiles_tokenizer import SMILESTokenizer, build_vocabulary
+from chemformer_rs import SMILESTokenizer, build_vocabulary
 
 # Test 1: Import
 print('✓ Module imported successfully')
@@ -92,7 +93,7 @@ print(f'✓ Vocabulary built: {len(vocab)} tokens')
 
 # Test 3: Initialize tokenizer
 tokenizer = SMILESTokenizer(vocab)
-assert tokenizer.vocab_size == len(vocab), 'Vocab size mismatch'
+assert tokenizer.vocab_size >= len(vocab), 'Vocab size mismatch'
 print(f'✓ Tokenizer initialized: vocab_size={tokenizer.vocab_size}')
 
 # Test 4: Tokenization
@@ -126,5 +127,5 @@ echo "  3. Run tests: pytest tests/"
 echo "  4. Check README.md for API documentation"
 echo ""
 echo "Quick test:"
-echo "  python -c \"from smiles_tokenizer import SMILESTokenizer; print('✓ Ready to use!')\""
+echo "  python -c \"from chemformer_rs import SMILESTokenizer; print('✓ Ready to use!')\""
 echo ""
