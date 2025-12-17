@@ -3,7 +3,7 @@ import shutil
 import tempfile
 import os
 from pathlib import Path
-from chemformer_rs import SMILESTokenizer, RocksDBVocabBuilder
+from chemformer_rs.tokenizer import SMILESTokenizer, RocksDBVocabBuilder
 
 @pytest.fixture
 def temp_path():

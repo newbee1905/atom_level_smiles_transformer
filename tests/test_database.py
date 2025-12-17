@@ -2,7 +2,7 @@ import pytest
 import shutil
 import tempfile
 import concurrent.futures
-from chemformer_rs import PyRockDB
+from chemformer_rs.database import PyRockDB
 
 @pytest.fixture
 def temp_db_path():
