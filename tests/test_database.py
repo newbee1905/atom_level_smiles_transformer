@@ -7,6 +7,7 @@ import pickle
 import zlib
 from chemformer_rs.database import PyRockDB
 
+
 # --- Utility Functions ---
 def get_dir_size_rocksdb(path):
 	"""Standard size calculation for RocksDB (sum of all files)."""
