@@ -132,6 +132,8 @@ pub struct SMILESTokenizer {
 impl SMILESTokenizer {
 	#[new]
 	fn new(vocabulary: Option<Vec<String>>) -> Self {
+		pyo3::prepare_freethreaded_python();
+
 		let special_tokens = SPECIAL_TOKENS.iter();
 		let explicit_smiles_tokens = SMILES_EXPLICIT_TOKENS.iter().map(|s| s.to_string());
 
