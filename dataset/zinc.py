@@ -110,9 +110,7 @@ class ZincDataset(Dataset):
 			smi = txn.get(f"{db_index}".encode("ascii")).decode("ascii")
 
 		augmented_smiles = (
-			(self.randomize_smiles(smi) if np.random.rand() < self.augment_prob else smi)
-			if self.is_training
-			else smi
+			(self.randomize_smiles(smi) if np.random.rand() < self.augment_prob else smi) if self.is_training else smi
 		)
 
 		# Tokenize, but without special tokens or padding yet

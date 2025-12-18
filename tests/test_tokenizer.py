@@ -2,7 +2,7 @@ import pytest
 import shutil
 import tempfile
 import os
-import json  
+import json
 from pathlib import Path
 from chemformer_rs.tokenizer import SMILESTokenizer, RocksDBVocabBuilder
 
@@ -83,7 +83,22 @@ def test_tokenizer_special_characters_and_brackets(full_vocab_tokenizer):
 	"""Test tokenization of SMILES with special characters and bracketed atoms."""
 	smiles = "C(=O)[NH3+]c1ccccc1"
 	tokens, _ = full_vocab_tokenizer.tokenize(smiles, add_bos=False, add_eos=False)
-	expected = ["C", "(", "=", "O", ")", "[NH3+]", "c", "1", "c", "c", "c", "c", "c", "1"]
+	expected = [
+		"C",
+		"(",
+		"=",
+		"O",
+		")",
+		"[NH3+]",
+		"c",
+		"1",
+		"c",
+		"c",
+		"c",
+		"c",
+		"c",
+		"1",
+	]
 	assert tokens == expected
 
 
@@ -192,5 +207,5 @@ def test_tokenizer_from_json_and_yaml_vocab(temp_path):
 
 def test_vocab_size_getter(full_vocab_tokenizer):
 	"""Test the vocab_size getter method."""
-	expected_size = len(full_vocab_tokenizer.tokens)  
+	expected_size = len(full_vocab_tokenizer.tokens)
 	assert full_vocab_tokenizer.vocab_size == expected_size

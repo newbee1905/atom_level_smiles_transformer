@@ -13,3 +13,6 @@ use_qk_norm: true
 ffn_multiplier: 2.6666666666666665
 rope_theta: 10000.0
 layer_scale_init: 0.0001
+electra_task: true
+encoder_attention_type: "mha"
+max_relative_positions: 512

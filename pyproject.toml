@@ -25,6 +25,8 @@ dependencies = [
     "poethepoet>=0.27.0",
     "hydra-core>=1.2.0",
     "maturin>=1.10.2",
+    "wandb",
+    "python-dotenv",
 ]
 
 [tool.maturin]
