@@ -1,7 +1,5 @@
-import torch
 import torch.nn as nn
 
-from .config import ModelConfig
 from .encoder import Encoder
 from .decoder import Decoder
 from .utils import precompute_freqs_cis
@@ -11,7 +9,7 @@ from .projection import Submersion, Immersion
 class Bart(nn.Module):
 	"""The main BART-like model."""
 
-	def __init__(self, config: ModelConfig):
+	def __init__(self, config):
 		super().__init__()
 		self.config = config
 

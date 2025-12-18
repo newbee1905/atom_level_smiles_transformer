@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .config import ModelConfig
 from liger_kernel.transformers.rms_norm import LigerRMSNormForGemma as RMSNorm
 
 
@@ -13,7 +12,7 @@ class Submersion(nn.Module):
 	as the paper's description and formulas are ambiguous.
 	"""
 
-	def __init__(self, config: ModelConfig):
+	def __init__(self, config):
 		super().__init__()
 		self.config = config
 		self.w1 = nn.Linear(config.d_model, config.d_model)
@@ -49,7 +48,7 @@ class Immersion(nn.Module):
 	The implementation is based on a plausible interpretation of the SMI-TED paper.
 	"""
 
-	def __init__(self, config: ModelConfig):
+	def __init__(self):
 		super().__init__()
 		self.config = config
 		self.w3 = nn.Linear(config.d_model, config.d_model)

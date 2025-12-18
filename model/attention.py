@@ -4,7 +4,6 @@ import torch.nn.functional as F
 
 from liger_kernel.transformers.rms_norm import LigerRMSNormForGemma as RMSNorm
 
-from .config import ModelConfig
 from .utils import apply_rope
 
 
@@ -17,7 +16,7 @@ class MHA(nn.Module):
 	- Cross-Attention
 	"""
 
-	def __init__(self, config: ModelConfig, is_decoder: bool = False):
+	def __init__(self, config, is_decoder: bool = False):
 		super().__init__()
 		assert config.d_model % config.n_head == 0
 		self.config = config

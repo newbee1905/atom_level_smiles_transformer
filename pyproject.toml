@@ -40,3 +40,7 @@ indent-style = "tab"
 [tool.poe.tasks.build-rust]
 cmd = "maturin develop --release --manifest-path chemformer_rs/Cargo.toml"
 help = "Build the rust extension in release mode."
+
+[tool.pytest.ini_options]
+addopts = ["-m", "not benchmark"]
+markers = ["benchmark: marks tests as benchmarks (deselect with '-m \"not benchmark\"')"]

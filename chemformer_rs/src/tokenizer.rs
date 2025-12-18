@@ -9,6 +9,7 @@ use rayon::prelude::*;
 use ahash::AHashSet;
 use rocksdb::{DB, Options, IteratorMode, Direction, DBCompressionType};
 use serde::{Serialize, Deserialize};
+use serde_yaml;
 use std::fs;
 
 /*
@@ -176,6 +177,19 @@ impl SMILESTokenizer {
 		}
 	}
 
+	/// Load tokenizer from a vocabulary file (JSON or YAML)
+	#[staticmethod]
+	fn from_vocab(file_path: &str) -> PyResult<SMILESTokenizer> {
+		let path = Path::new(file_path);
+		match path.extension().and_then(|s| s.to_str()) {
+			Some("json") => SMILESTokenizer::from_vocab_json(file_path),
+			Some("yaml") | Some("yml") => SMILESTokenizer::from_vocab_yaml(file_path),
+			_ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+				"Unsupported file type. Please use .json or .yaml/.yml",
+			)),
+		}
+	}
+
 	/// Load tokenizer from JSON vocabulary file
 	#[staticmethod]
 	fn from_vocab_json(file_path: &str) -> PyResult<SMILESTokenizer> {
@@ -190,6 +204,48 @@ impl SMILESTokenizer {
 			))?;
 
 		Ok(SMILESTokenizer::new(Some(vocab_data.tokens)))
+	}
+
+	/// Load tokenizer from YAML vocabulary file
+	#[staticmethod]
+	fn from_vocab_yaml(file_path: &str) -> PyResult<SMILESTokenizer> {
+		let content = std::fs::read_to_string(file_path)
+			.map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(
+				format!("Failed to read vocab file: {}", e)
+			))?;
+
+		let vocab_data: VocabularyData = serde_yaml::from_str(&content)
+			.map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(
+				format!("Failed to parse YAML: {}", e)
+			))?;
+
+		Ok(SMILESTokenizer::new(Some(vocab_data.tokens)))
+	}
+
+	/// Convert JSON vocabulary to YAML format
+	#[staticmethod]
+	fn json_to_yaml_vocab(json_path: &str, yaml_path: &str) -> PyResult<()> {
+		let content = std::fs::read_to_string(json_path)
+			.map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(
+				format!("Failed to read JSON file: {}", e)
+			))?;
+
+		let vocab_data: VocabularyData = serde_json::from_str(&content)
+			.map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(
+				format!("Failed to parse JSON: {}", e)
+			))?;
+
+		let yaml_str = serde_yaml::to_string(&vocab_data)
+			.map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(
+				format!("Failed to serialize to YAML: {}", e)
+			))?;
+
+		std::fs::write(yaml_path, yaml_str)
+			.map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(
+				format!("Failed to write YAML file: {}", e)
+			))?;
+
+		Ok(())
 	}
 
 	/// Save vocabulary to JSON file
@@ -217,6 +273,38 @@ impl SMILESTokenizer {
 			))?;
 
 		std::fs::write(file_path, json_str)
+			.map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(
+				format!("Failed to write vocab file: {}", e)
+			))?;
+
+		Ok(())
+	}
+
+	/// Save vocabulary to YAML file
+	fn save_vocab_yaml(&self, file_path: &str, source: &str) -> PyResult<()> {
+		let mut vocab_list: Vec<String> = self.vocabulary.iter().cloned().collect();
+		vocab_list.sort();
+
+		let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+		let vocab_data = VocabularyData {
+			tokens: vocab_list.clone(),
+			metadata: VocabMetadata {
+				total_tokens: 0,  // Would need to track separately
+				unique_tokens: vocab_list.len(),
+				total_smiles_processed: 0,
+				created_date: now,
+				source: source.to_string(),
+				charset: "SMILES".to_string(),
+			},
+		};
+
+		let yaml_str = serde_yaml::to_string(&vocab_data)
+			.map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(
+				format!("Failed to serialize to YAML: {}", e)
+			))?;
+
+		std::fs::write(file_path, yaml_str)
 			.map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(
 				format!("Failed to write vocab file: {}", e)
 			))?;

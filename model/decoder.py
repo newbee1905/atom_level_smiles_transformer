@@ -1,15 +1,14 @@
 import torch.nn as nn
 
-from .config import ModelConfig
 from .block import DecoderBlock
 from liger_kernel.transformers.rms_norm import LigerRMSNormForGemma as RMSNorm
 
 
 class Decoder(nn.Module):
-	def __init__(self, config: ModelConfig):
-		super().__init__()
-		self.config = config
+	"""The decoder part of the transformer."""
 
+	def __init__(self, config):
+		super().__init__()
 		self.layers = nn.ModuleList([DecoderBlock(config) for _ in range(config.n_decoder_layer)])
 		self.norm = RMSNorm(config.d_model)
 

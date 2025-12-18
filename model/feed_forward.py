@@ -1,8 +1,6 @@
 import torch.nn as nn
 from liger_kernel.ops.swiglu import LigerSiLUMulFunction
 
-from .config import ModelConfig
-
 
 class FeedForward(nn.Module):
 	"""
@@ -10,7 +8,7 @@ class FeedForward(nn.Module):
 	Implements: (input @ W_gate) * SiLU(input @ W_up) @ W_down
 	"""
 
-	def __init__(self, config: ModelConfig):
+	def __init__(self, config):
 		super().__init__()
 		d_model = config.d_model
 		intermediate_size = int(d_model * config.ffn_multiplier)

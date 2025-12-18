@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 
-from .config import ModelConfig
 from .attention import MHA
 from .feed_forward import FeedForward
 from liger_kernel.transformers.rms_norm import LigerRMSNormForGemma as RMSNorm
@@ -10,7 +9,7 @@ from liger_kernel.transformers.rms_norm import LigerRMSNormForGemma as RMSNorm
 class EncoderBlock(nn.Module):
 	"""A single Transformer encoder block."""
 
-	def __init__(self, config: ModelConfig):
+	def __init__(self, config):
 		super().__init__()
 		self.attn_norm = RMSNorm(config.d_model)
 		self.attn = MHA(config, is_decoder=False)
@@ -37,7 +36,7 @@ class EncoderBlock(nn.Module):
 class DecoderBlock(nn.Module):
 	"""A single Transformer decoder block."""
 
-	def __init__(self, config: ModelConfig):
+	def __init__(self, config):
 		super().__init__()
 		self.self_attn_norm = RMSNorm(config.d_model)
 		self.self_attn = MHA(config, is_decoder=True)
