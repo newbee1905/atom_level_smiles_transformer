@@ -30,10 +30,10 @@ class ZincDataset(Dataset):
 		self.env = None
 
 		# Get special token IDs
-		self.mask_token_id = self.tokenizer.token_to_id("<mask>")
-		self.pad_token_id = self.tokenizer.token_to_id("<PAD>")
-		self.bos_token_id = self.tokenizer.token_to_id("<BOS>")
-		self.eos_token_id = self.tokenizer.token_to_id("<EOS>")
+		self.mask_token_id = self.tokenizer.token_to_index("<MASK>")
+		self.pad_token_id = self.tokenizer.token_to_index("<PAD>")
+		self.bos_token_id = self.tokenizer.token_to_index("<BOS>")
+		self.eos_token_id = self.tokenizer.token_to_index("<EOS>")
 
 		env = lmdb.open(self.lmdb_path, readonly=True, lock=False)
 		with env.begin(write=False) as txn:
@@ -107,14 +107,12 @@ class ZincDataset(Dataset):
 
 		db_index = self.indices[index]
 		with self.env.begin(write=False) as txn:
-			data = pickle.loads(txn.get(f"{db_index}".encode("ascii")))
-
-		original_smiles = data["smiles"]
+			smi = txn.get(f"{db_index}".encode("ascii")).decode("ascii")
 
 		augmented_smiles = (
-			(self.randomize_smiles(original_smiles) if np.random.rand() < self.augment_prob else original_smiles)
+			(self.randomize_smiles(smi) if np.random.rand() < self.augment_prob else smi)
 			if self.is_training
-			else original_smiles
+			else smi
 		)
 
 		# Tokenize, but without special tokens or padding yet
@@ -123,7 +121,6 @@ class ZincDataset(Dataset):
 			add_bos=False,
 			add_eos=False,
 			pad_to_length=False,
-			truncation=True,
 			max_length=self.max_length - 2,  # Leave space for BOS/EOS
 		)
 		core_token_ids = np.array(core_token_ids)

@@ -96,6 +96,7 @@ lazy_static! {
 		"<PAD>".to_string(),
 		"<BOS>".to_string(),
 		"<EOS>".to_string(),
+		"<MASK>".to_string(),
 	];
 }
 
