@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from .attention import MHA
+from .attention import MHA, DisentangledSelfAttention
 from .feed_forward import FeedForward
 from liger_kernel.transformers.rms_norm import LigerRMSNormForGemma as RMSNorm
 
@@ -12,7 +12,11 @@ class EncoderBlock(nn.Module):
 	def __init__(self, config):
 		super().__init__()
 		self.attn_norm = RMSNorm(config.d_model)
-		self.attn = MHA(config, is_decoder=False)
+		self.attention_type = getattr(config, "encoder_attention_type", "mha")
+		if self.attention_type == "disentangled":
+			self.attn = DisentangledSelfAttention(config)
+		else:
+			self.attn = MHA(config, is_decoder=False)
 		self.attn_dropout = nn.Dropout(config.dropout)
 		self.attn_layerscale = nn.Parameter(config.layer_scale_init * torch.ones(config.d_model))
 
@@ -23,7 +27,10 @@ class EncoderBlock(nn.Module):
 
 	def forward(self, x, freqs_cos, freqs_sin):
 		attn_norm = self.attn_norm(x)
-		attn_out, _ = self.attn(attn_norm, freqs_cos, freqs_sin, is_causal=False)
+		if self.attention_type == "disentangled":
+			attn_out, _ = self.attn(attn_norm)
+		else:
+			attn_out, _ = self.attn(attn_norm, freqs_cos, freqs_sin, is_causal=False)
 		x = x + self.attn_dropout(attn_out * self.attn_layerscale)
 
 		ffn_norm = self.ffn_norm(x)

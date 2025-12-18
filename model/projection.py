@@ -48,7 +48,7 @@ class Immersion(nn.Module):
 	The implementation is based on a plausible interpretation of the SMI-TED paper.
 	"""
 
-	def __init__(self):
+	def __init__(self, config):
 		super().__init__()
 		self.config = config
 		self.w3 = nn.Linear(config.d_model, config.d_model)

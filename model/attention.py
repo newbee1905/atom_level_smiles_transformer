@@ -22,7 +22,7 @@ class MHA(nn.Module):
 		self.config = config
 		self.n_head = config.n_head
 		self.d_model = config.d_model
-		self.d_head = config.d_model // config.n_head
+		self.d_head = config.d_model // self.n_head
 		self.max_seq_len = config.block_size
 		self.use_kv_cache = config.use_kv_cache and is_decoder
 		self.use_qk_norm = config.use_qk_norm
@@ -70,12 +70,13 @@ class MHA(nn.Module):
 		k = k.view(bsz, -1, self.n_head, self.d_head).transpose(1, 2)
 		v = v.view(bsz, -1, self.n_head, self.d_head).transpose(1, 2)
 
-		seq_len_past = layer_past[0].size(2) if layer_past is not None else 0
-		seq_len_total = seq_len_past + seq_len
+		seq_len_past = 0
+		if self.use_kv_cache and layer_past is not None:
+			seq_len_past = layer_past[0].size(2)
 
 		# Apply RoPE for self-attention in decoder
 		if not is_cross_attention:
-			q, k = apply_rope(q, k, freqs_cos, freqs_sin, seq_len=seq_len_total)
+			q, k = apply_rope(q, k, freqs_cos, freqs_sin, seq_len_past=seq_len_past)
 
 		if self.use_qk_norm:
 			q = self.q_norm(q)
@@ -103,3 +104,91 @@ class MHA(nn.Module):
 		output = self.resid_dropout(output)
 
 		return output, present
+
+
+class DisentangledSelfAttention(nn.Module):
+	"""
+	Disentangled self-attention mechanism, inspired by DeBERTaV3.
+	This implementation is for the encoder and uses F.scaled_dot_product_attention.
+	"""
+
+	def __init__(self, config):
+		super().__init__()
+		assert config.d_model % config.n_head == 0
+		self.config = config
+		self.n_head = config.n_head
+		self.d_head = config.d_model // self.n_head
+		self.use_qk_norm = getattr(config, "use_qk_norm", False)
+
+		self.q_proj = nn.Linear(config.d_model, config.d_model, bias=True)
+		self.k_proj = nn.Linear(config.d_model, config.d_model, bias=True)
+		self.v_proj = nn.Linear(config.d_model, config.d_model, bias=True)
+		self.c_proj = nn.Linear(config.d_model, config.d_model, bias=False)
+		self.resid_dropout = nn.Dropout(config.dropout)
+
+		if self.use_qk_norm:
+			self.q_norm = RMSNorm(self.d_head)
+			self.k_norm = RMSNorm(self.d_head)
+
+		# Relative position embeddings
+		self.max_relative_positions = getattr(config, "max_relative_positions", 512)
+		self.pos_embed = nn.Embedding(self.max_relative_positions * 2, self.d_head)
+		self.pos_dropout = nn.Dropout(config.dropout)
+
+	def get_relative_positional_bias(self, q, k, rel_pos_embeds):
+		"""Computes the relative positional bias terms."""
+		# B, H, L, D
+		bsz, n_head, seq_len, d_head = q.size()
+		rel_pos_embeds = rel_pos_embeds.view(seq_len, seq_len, d_head)
+
+		# Content-to-Position
+		c2p_score = torch.einsum("bhld,ijd->bhij", q, rel_pos_embeds)
+
+		# Position-to-Content
+		# We need to flip the relative positions for this term
+		p2c_embeds = torch.flip(rel_pos_embeds, dims=[0])
+		p2c_score = torch.einsum("bhjd,ijd->bhij", k, p2c_embeds)
+
+		return c2p_score + p2c_score
+
+	def forward(self, hidden_states, attention_mask=None):
+		bsz, seq_len, _ = hidden_states.size()
+
+		q = self.q_proj(hidden_states)
+		k = self.k_proj(hidden_states)
+		v = self.v_proj(hidden_states)
+
+		q = q.view(bsz, seq_len, self.n_head, self.d_head).transpose(1, 2)
+		k = k.view(bsz, seq_len, self.n_head, self.d_head).transpose(1, 2)
+		v = v.view(bsz, seq_len, self.n_head, self.d_head).transpose(1, 2)
+
+		if self.use_qk_norm:
+			q = self.q_norm(q)
+			k = self.k_norm(k)
+
+		# --- Relative Position Handling ---
+		rel_pos_indices = torch.arange(seq_len, device=hidden_states.device)
+		rel_pos_mat = rel_pos_indices.unsqueeze(1) - rel_pos_indices.unsqueeze(0)
+		rel_pos_mat += self.max_relative_positions
+		rel_pos_mat = torch.clamp(rel_pos_mat, 0, 2 * self.max_relative_positions - 1)
+
+		rel_pos_embeds = self.pos_embed(rel_pos_mat)
+		rel_pos_embeds = self.pos_dropout(rel_pos_embeds)
+
+		# --- Attention Score Calculation ---
+		# Get positional bias and add it to the attention mask
+		positional_bias = self.get_relative_positional_bias(q, k, rel_pos_embeds)
+		if attention_mask is not None:
+			# The mask is broadcastable to (B, H, L, L)
+			positional_bias += attention_mask
+
+		# --- Fused Attention ---
+		# The content-to-content score is handled internally by scaled_dot_product_attention
+		attn_output = F.scaled_dot_product_attention(q, k, v, attn_mask=positional_bias, is_causal=False)
+
+		attn_output = attn_output.transpose(1, 2).contiguous().view(bsz, seq_len, -1)
+
+		output = self.c_proj(attn_output)
+		output = self.resid_dropout(output)
+
+		return output, None
