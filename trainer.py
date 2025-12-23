@@ -79,6 +79,7 @@ class Trainer:
 		self.device = device
 		self.rank = rank
 		self.world_size = world_size
+		self.is_ddp = self.world_size > 1
 		self.is_main_process = self.rank == 0
 		self.electra_task = self.cfg.model.get("electra_task", False)
 		self.electra_loss_weight = self.cfg.training.get("electra_loss_weight", 50.0)
@@ -87,17 +88,24 @@ class Trainer:
 
 		model = model.to(device)
 		if self.cfg.training.get("compile", False):
-			print("Compiling the model...")
+			if self.is_main_process:
+				print("Compiling the model...")
 			model = torch.compile(model)
 
-		self.model = DDP(model, device_ids=[self.device])
+		if self.is_ddp:
+			if self.device.type == "cuda":
+				self.model = DDP(model, device_ids=[self.device.index])
+			else:
+				self.model = DDP(model)  # For CPU DDP
+		else:
+			self.model = model
 
 		self.dtype = getattr(torch, cfg.training.get("dtype", "bfloat16"))
 		self.use_amp = (self.dtype == torch.float16) and ("cuda" in self.device.type)
 		self.scaler = GradScaler(enabled=self.use_amp)
 		self.grad_accum_steps = self.cfg.training.get("grad_accum_steps", 1)
 
-		pad_id = self.train_loader.dataset.tokenizer.pad_id
+		pad_id = self.cfg.model.pad_token_id
 		self.criterion = torch.nn.CrossEntropyLoss(ignore_index=pad_id)
 		if self.electra_task:
 			self.electra_criterion = torch.nn.BCEWithLogitsLoss()
@@ -130,7 +138,7 @@ class Trainer:
 			{"params": adamw_no_decay_params, "use_muon": False, "weight_decay": 0.0},
 		]
 
-		if self.world_size > 1:
+		if self.is_ddp:
 			self.optimizer = DistMuon(param_groups, lr=optimizer_cfg.lr, weight_decay=optimizer_cfg.weight_decay)
 		else:
 			self.optimizer = Muon(param_groups, lr=optimizer_cfg.lr, weight_decay=optimizer_cfg.weight_decay)
@@ -139,6 +147,7 @@ class Trainer:
 			self.optimizer,
 			max_lr=self.optimizer.param_groups[0]["lr"],
 			total_steps=(len(self.train_loader) * self.cfg.training.epochs) // self.grad_accum_steps,
+			cycle_momentum=False,
 		)
 
 		self.grad_clip = self.cfg.training.get("grad_clip", 1.0)
@@ -157,7 +166,7 @@ class Trainer:
 		self.logger = UnifiedLogger(cfg, self.output_dir, self.rank)
 
 	def _get_model_for_saving(self):
-		model_to_save = self.model.module
+		model_to_save = self.model.module if self.is_ddp else self.model
 		if self.cfg.training.get("compile", False):
 			if hasattr(model_to_save, "_orig_mod"):
 				model_to_save = model_to_save._orig_mod
@@ -190,7 +199,8 @@ class Trainer:
 
 	def _train_one_epoch(self, pbar, metrics_dict, epoch):
 		self.model.train()
-		self.train_loader.sampler.set_epoch(epoch)
+		if self.is_ddp:
+			self.train_loader.sampler.set_epoch(epoch)
 		running_loss = 0.0
 		running_gen_loss = 0.0
 		running_disc_loss = 0.0
@@ -202,7 +212,7 @@ class Trainer:
 				gen_logits, _, disc_logits = self.model(batch["src"], batch["tgt"])
 
 				# Apply soft-capping to generator logits
-				gen_logits = softcap * torch.tanh(gen_logits / softcap)
+				gen_logits = self.softcap * torch.tanh(gen_logits / self.softcap)
 
 				gen_loss = self.criterion(gen_logits.view(-1, gen_logits.size(-1)), batch["tgt"].view(-1))
 				loss = gen_loss
@@ -242,9 +252,10 @@ class Trainer:
 		epoch_gen_loss = torch.tensor(running_gen_loss / len(self.train_loader), device=self.device)
 		epoch_disc_loss = torch.tensor(running_disc_loss / len(self.train_loader), device=self.device)
 
-		dist.all_reduce(epoch_loss, op=dist.ReduceOp.AVG)
-		dist.all_reduce(epoch_gen_loss, op=dist.ReduceOp.AVG)
-		dist.all_reduce(epoch_disc_loss, op=dist.ReduceOp.AVG)
+		if self.is_ddp:
+			dist.all_reduce(epoch_loss, op=dist.ReduceOp.AVG)
+			dist.all_reduce(epoch_gen_loss, op=dist.ReduceOp.AVG)
+			dist.all_reduce(epoch_disc_loss, op=dist.ReduceOp.AVG)
 
 		return epoch_loss.item(), epoch_gen_loss.item(), epoch_disc_loss.item()
 
@@ -258,7 +269,7 @@ class Trainer:
 		correct_tokens = 0
 		exact_matches = 0
 		total_sequences = 0
-		pad_id = self.train_loader.dataset.tokenizer.pad_id
+		pad_id = self.cfg.model.pad_token_id
 
 		with torch.no_grad():
 			for batch in dataloader:
@@ -294,19 +305,22 @@ class Trainer:
 		epoch_loss = torch.tensor(running_loss / len(dataloader), device=self.device)
 		epoch_gen_loss = torch.tensor(running_gen_loss / len(dataloader), device=self.device)
 		epoch_disc_loss = torch.tensor(running_disc_loss / len(dataloader), device=self.device)
-		dist.all_reduce(epoch_loss, op=dist.ReduceOp.AVG)
-		dist.all_reduce(epoch_gen_loss, op=dist.ReduceOp.AVG)
-		dist.all_reduce(epoch_disc_loss, op=dist.ReduceOp.AVG)
+		
+		if self.is_ddp:
+			dist.all_reduce(epoch_loss, op=dist.ReduceOp.AVG)
+			dist.all_reduce(epoch_gen_loss, op=dist.ReduceOp.AVG)
+			dist.all_reduce(epoch_disc_loss, op=dist.ReduceOp.AVG)
 
 		# Aggregate accuracy stats
 		total_tokens = torch.tensor(total_tokens, device=self.device)
 		correct_tokens = torch.tensor(correct_tokens, device=self.device)
 		exact_matches = torch.tensor(exact_matches, device=self.device)
 		total_sequences = torch.tensor(total_sequences, device=self.device)
-		dist.all_reduce(total_tokens, op=dist.ReduceOp.SUM)
-		dist.all_reduce(correct_tokens, op=dist.ReduceOp.SUM)
-		dist.all_reduce(exact_matches, op=dist.ReduceOp.SUM)
-		dist.all_reduce(total_sequences, op=dist.ReduceOp.SUM)
+		if self.is_ddp:
+			dist.all_reduce(total_tokens, op=dist.ReduceOp.SUM)
+			dist.all_reduce(correct_tokens, op=dist.ReduceOp.SUM)
+			dist.all_reduce(exact_matches, op=dist.ReduceOp.SUM)
+			dist.all_reduce(total_sequences, op=dist.ReduceOp.SUM)
 
 		token_accuracy = (correct_tokens / total_tokens) if total_tokens > 0 else torch.tensor(0.0)
 		exact_accuracy = (exact_matches / total_sequences) if total_sequences > 0 else torch.tensor(0.0)
@@ -368,14 +382,16 @@ class Trainer:
 
 				pbar.set_postfix(metrics_dict)
 
-			dist.barrier()
+			if self.is_ddp:
+				dist.barrier()
 
 			if self.epochs_no_improve >= self.early_stopping_patience:
 				if self.is_main_process:
 					print(f"\nEarly stopping triggered after {self.epochs_no_improve} epochs with no improvement.")
 				break
 
-		dist.barrier()
+		if self.is_ddp:
+			dist.barrier()
 		self.logger.close()
 		if self.is_main_process:
 			print(f"\nTraining complete. Best model from epoch {self.best_epoch} saved to {self.best_model_path}")
