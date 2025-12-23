@@ -9,6 +9,7 @@ class Decoder(nn.Module):
 
 	def __init__(self, config):
 		super().__init__()
+		self.config = config
 		self.layers = nn.ModuleList([DecoderBlock(config) for _ in range(config.n_decoder_layer)])
 		self.norm = RMSNorm(config.d_model)
 

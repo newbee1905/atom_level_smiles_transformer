@@ -74,9 +74,10 @@ class MHA(nn.Module):
 		if self.use_kv_cache and layer_past is not None:
 			seq_len_past = layer_past[0].size(2)
 
-		# Apply RoPE for self-attention in decoder
+		# Apply RoPE for self-attention
 		if not is_cross_attention:
-			q, k = apply_rope(q, k, freqs_cos, freqs_sin, seq_len_past=seq_len_past)
+			total_seq_len = seq_len + seq_len_past
+			q, k = apply_rope(q, k, freqs_cos, freqs_sin, seq_len=total_seq_len)
 
 		if self.use_qk_norm:
 			q = self.q_norm(q)
