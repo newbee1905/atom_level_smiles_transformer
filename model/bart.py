@@ -18,11 +18,13 @@ class GDESEmbedding(nn.Module):
 		nn.init.normal_(self.delta_embedding.weight, mean=0.0, std=0.02)
 
 	def forward(self, input_ids):
-		# Stop gradients from the Encoder's RTD loss flowing to the master weights
-		shared_embeds = F.embedding(input_ids, self.master_weight).detach()
+		if self.master_weight is not None:
+			# Stop gradients from the Encoder's RTD loss flowing to the master weights
+			shared_embeds = F.embedding(input_ids, self.master_weight).detach()
 
-		# Add the learnable delta (Discriminator-only gradient)
-		return shared_embeds + self.delta_embedding(input_ids)
+			# Add the learnable delta (Discriminator-only gradient)
+			return shared_embeds + self.delta_embedding(input_ids)
+		return self.delta_embedding(input_ids)
 
 
 class Bart(nn.Module):
@@ -34,6 +36,7 @@ class Bart(nn.Module):
 
 		self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
 		self.electra_task = getattr(config, "electra_task", False)
+		self.tie_word_embeddings = getattr(config, "tie_word_embeddings", True)
 
 		head_dim = config.d_model // config.n_head
 		freqs_cos, freqs_sin = precompute_freqs_cis(head_dim, config.block_size, config.rope_theta)
@@ -41,12 +44,16 @@ class Bart(nn.Module):
 		self.register_buffer("freqs_sin", freqs_sin, persistent=False)
 
 		self.decoder_emb = nn.Embedding(config.vocab_size, config.d_model)
-		self.decoder_emb.weight = self.lm_head.weight
 		if self.electra_task:
-			self.encoder_emb = GDESEmbedding(self.lm_head.weight, config)
+			master_weight = self.lm_head.weight if self.tie_word_embeddings else None
+			self.encoder_emb = GDESEmbedding(master_weight, config)
 		else:
 			self.encoder_emb = nn.Embedding(config.vocab_size, config.d_model)
-			self.encoder_emb.weight = self.lm_head.weight
+
+		if self.tie_word_embeddings:
+			self.decoder_emb.weight = self.lm_head.weight
+			if not self.electra_task:
+				self.encoder_emb.weight = self.lm_head.weight
 
 		self.drop = nn.Dropout(config.dropout)
 

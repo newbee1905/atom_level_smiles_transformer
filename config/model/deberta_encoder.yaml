@@ -1,9 +1,9 @@
-name: chemformer-laptop
-block_size: 256
-n_encoder_layer: 2
-n_decoder_layer: 2
-n_head: 2
-d_model: 128
+name: chemformer-medium-deberta-encoder
+block_size: 512
+n_encoder_layer: 6
+n_decoder_layer: 6
+n_head: 8
+d_model: 512
 dropout: 0.1
 use_submersion: false
 submersion_pooling_method: "mean"
@@ -15,6 +15,5 @@ ffn_multiplier: 2.6666666666666665
 rope_theta: 10000.0
 layer_scale_init: 0.0001
 electra_task: true
-encoder_attention_type: "mha"
-max_relative_positions: 256
-tie_word_embeddings: false
+encoder_attention_type: "disentangled"
+max_relative_positions: 512

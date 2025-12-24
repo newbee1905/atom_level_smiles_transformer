@@ -70,8 +70,6 @@ class Trainer:
 		device,
 		rank,
 		world_size,
-		softcap=15.0,
-		name=None,
 	):
 		self.cfg = cfg
 		self.train_loader = train_loader
@@ -84,7 +82,8 @@ class Trainer:
 		self.electra_task = self.cfg.model.get("electra_task", False)
 		self.electra_loss_weight = self.cfg.training.get("electra_loss_weight", 50.0)
 
-		self.softcap = softcap
+		self.use_softcap = self.cfg.training.get("softcap.enabled", False)
+		self.softcap_value = self.cfg.training.get("softcap.value", 15.0)
 
 		model = model.to(device)
 		if self.cfg.training.get("compile", False):
@@ -115,8 +114,15 @@ class Trainer:
 		adamw_decay_params = []
 		adamw_no_decay_params = []
 
+		tie_word_embeddings = self.cfg.model.get("tie_word_embeddings", True)
+
 		for name, p in self.model.named_parameters():
 			if not p.requires_grad:
+				continue
+
+			# If weights are not tied, the lm_head is optimized separately without weight decay/muon.
+			if not tie_word_embeddings and "lm_head" in name:
+				adamw_no_decay_params.append(p)
 				continue
 
 			if p.ndim >= 2:
@@ -151,7 +157,7 @@ class Trainer:
 		)
 
 		self.grad_clip = self.cfg.training.get("grad_clip", 1.0)
-		self.name = name if name is not None else "model"
+		self.name = self.cfg.model.get("name", "model")
 		self.epochs = self.cfg.training.epochs
 
 		self.output_dir = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir)
@@ -213,7 +219,8 @@ class Trainer:
 				gen_logits, _, disc_logits = self.model(batch["src"], batch["tgt"])
 
 				# Apply soft-capping to generator logits
-				gen_logits = self.softcap * torch.tanh(gen_logits / self.softcap)
+				if self.use_softcap:
+					gen_logits = self.softcap_value * torch.tanh(gen_logits / self.softcap_value)
 
 				gen_loss = self.criterion(gen_logits.view(-1, gen_logits.size(-1)), batch["tgt"].view(-1))
 				loss = gen_loss
@@ -281,6 +288,8 @@ class Trainer:
 				batch = {k: v.to(self.device, non_blocking=True) for k, v in batch.items()}
 				with autocast(device_type=self.device.type, dtype=self.dtype, enabled=self.use_amp):
 					gen_logits, _, disc_logits = self.model(batch["src"], batch["tgt"])
+					if self.use_softcap:
+						gen_logits = self.softcap_value * torch.tanh(gen_logits / self.softcap_value)
 					gen_loss = self.criterion(gen_logits.view(-1, gen_logits.size(-1)), batch["tgt"].view(-1))
 					loss = gen_loss
 

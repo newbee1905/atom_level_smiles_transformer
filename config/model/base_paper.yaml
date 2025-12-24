@@ -1,10 +1,10 @@
-name: chemformer-laptop
-block_size: 256
-n_encoder_layer: 2
-n_decoder_layer: 2
-n_head: 2
-d_model: 128
-dropout: 0.1
+name: chemformer-base-paper
+block_size: 202
+n_encoder_layer: 12
+n_decoder_layer: 12
+n_head: 12
+d_model: 768
+dropout: 0.2
 use_submersion: false
 submersion_pooling_method: "mean"
 immersion_activation: "silu"
@@ -16,5 +16,4 @@ rope_theta: 10000.0
 layer_scale_init: 0.0001
 electra_task: true
 encoder_attention_type: "mha"
-max_relative_positions: 256
-tie_word_embeddings: false
+max_relative_positions: 202

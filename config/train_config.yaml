@@ -28,3 +28,6 @@ training:
   grad_clip: 1.0
   early_stopping_patience: 3
   electra_loss_weight: 50.0
+  softcap:
+    enabled: false
+    value: 30.0
