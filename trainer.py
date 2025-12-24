@@ -82,6 +82,9 @@ class Trainer:
 		self.electra_task = self.cfg.model.get("electra_task", False)
 		self.electra_loss_weight = self.cfg.training.get("electra_loss_weight", 50.0)
 
+		self.use_submersion = self.cfg.model.get("use_submersion", False)
+		self.submersion_loss_weight = self.cfg.training.get("submersion_loss_weight", 1.0)
+
 		self.use_softcap = self.cfg.training.get("softcap.enabled", False)
 		self.softcap_value = self.cfg.training.get("softcap.value", 15.0)
 
@@ -108,6 +111,8 @@ class Trainer:
 		self.criterion = torch.nn.CrossEntropyLoss(ignore_index=pad_id)
 		if self.electra_task:
 			self.electra_criterion = torch.nn.BCEWithLogitsLoss()
+		if self.use_submersion:
+			self.submersion_criterion = torch.nn.MSELoss()
 
 		# Create optimizer parameter groups
 		muon_params = []
@@ -179,7 +184,7 @@ class Trainer:
 				model_to_save = model_to_save._orig_mod
 		return model_to_save
 
-	def save_checkpoint(self, path, epoch, best=True):
+	sdef save_checkpoint(self, path, epoch, best=True):
 		"""Save training checkpoint."""
 		if not self.is_main_process:
 			return
@@ -211,12 +216,19 @@ class Trainer:
 		running_loss = 0.0
 		running_gen_loss = 0.0
 		running_disc_loss = 0.0
+		running_submersion_loss = 0.0
 
 		for batch_idx, batch in enumerate(self.train_loader):
 			batch = {k: v.to(self.device, non_blocking=True) for k, v in batch.items()}
 
 			with autocast(device_type=self.device.type, dtype=self.dtype, enabled=self.use_amp):
-				gen_logits, _, disc_logits = self.model(batch["src"], batch["tgt"])
+				(
+					gen_logits,
+					_,
+					disc_logits,
+					original_hidden,
+				reconstructed_hidden,
+			) = self.model(batch["src"], batch["tgt"])
 
 				# Apply soft-capping to generator logits
 				if self.use_softcap:
@@ -231,6 +243,12 @@ class Trainer:
 					loss += disc_loss * self.electra_loss_weight
 				else:
 					disc_loss = torch.tensor(0.0)
+
+				if self.use_submersion and reconstructed_hidden is not None:
+					submersion_loss = self.submersion_criterion(reconstructed_hidden, original_hidden)
+					loss += submersion_loss * self.submersion_loss_weight
+				else:
+					submersion_loss = torch.tensor(0.0)
 
 				loss = loss / self.grad_accum_steps
 
@@ -250,6 +268,7 @@ class Trainer:
 			running_loss += loss.item() * self.grad_accum_steps
 			running_gen_loss += gen_loss.item()
 			running_disc_loss += disc_loss.item()
+			running_submersion_loss += submersion_loss.item()
 
 			if self.is_main_process:
 				metrics_dict["batch_loss"] = f"{loss.item() * self.grad_accum_steps:.4f}"
@@ -263,19 +282,27 @@ class Trainer:
 		epoch_loss = torch.tensor(running_loss / len(self.train_loader.dataset), device=self.device)
 		epoch_gen_loss = torch.tensor(running_gen_loss / len(self.train_loader), device=self.device)
 		epoch_disc_loss = torch.tensor(running_disc_loss / len(self.train_loader), device=self.device)
+		epoch_submersion_loss = torch.tensor(running_submersion_loss / len(self.train_loader), device=self.device)
 
 		if self.is_ddp:
 			dist.all_reduce(epoch_loss, op=dist.ReduceOp.AVG)
 			dist.all_reduce(epoch_gen_loss, op=dist.ReduceOp.AVG)
 			dist.all_reduce(epoch_disc_loss, op=dist.ReduceOp.AVG)
+			dist.all_reduce(epoch_submersion_loss, op=dist.ReduceOp.AVG)
 
-		return epoch_loss.item(), epoch_gen_loss.item(), epoch_disc_loss.item()
+		return (
+			epoch_loss.item(),
+			epoch_gen_loss.item(),
+			epoch_disc_loss.item(),
+			epoch_submersion_loss.item(),
+		)
 
 	def _evaluate(self, dataloader):
 		self.model.eval()
 		running_loss = 0.0
 		running_gen_loss = 0.0
 		running_disc_loss = 0.0
+		running_submersion_loss = 0.0
 
 		total_tokens = 0
 		correct_tokens = 0
@@ -287,7 +314,14 @@ class Trainer:
 			for batch in dataloader:
 				batch = {k: v.to(self.device, non_blocking=True) for k, v in batch.items()}
 				with autocast(device_type=self.device.type, dtype=self.dtype, enabled=self.use_amp):
-					gen_logits, _, disc_logits = self.model(batch["src"], batch["tgt"])
+					(
+						gen_logits,
+						_,
+						disc_logits,
+						original_hidden,
+					reconstructed_hidden,
+					) = self.model(batch["src"], batch["tgt"])
+
 					if self.use_softcap:
 						gen_logits = self.softcap_value * torch.tanh(gen_logits / self.softcap_value)
 					gen_loss = self.criterion(gen_logits.view(-1, gen_logits.size(-1)), batch["tgt"].view(-1))
@@ -300,17 +334,25 @@ class Trainer:
 					else:
 						disc_loss = torch.tensor(0.0)
 
-				running_loss += loss.item()
-				running_gen_loss += gen_loss.item()
-				running_disc_loss += disc_loss.item()
+					if self.use_submersion and reconstructed_hidden is not None:
+						submersion_loss = self.submersion_criterion(reconstructed_hidden, original_hidden)
+						loss += submersion_loss * self.submersion_loss_weight
+					else:
+						submersion_loss = torch.tensor(0.0)
 
-				# Accuracy calculation
+			running_loss += loss.item()
+			running_gen_loss += gen_loss.item()
+			running_disc_loss += disc_loss.item()
+			running_submersion_loss += submersion_loss.item()
+
+
+					# Accuracy calculation
 				preds = torch.argmax(gen_logits, dim=-1)
 				mask = batch["tgt"] != pad_id
 				correct_tokens += torch.sum(preds[mask] == batch["tgt"][mask]).item()
 				total_tokens += torch.sum(mask).item()
 
-				# Exact match calculation
+					# Exact match calculation
 				correct_in_sequence = (preds == batch["tgt"]) | ~mask
 				exact_matches += torch.all(correct_in_sequence, dim=1).sum().item()
 				total_sequences += batch["tgt"].size(0)
@@ -319,11 +361,13 @@ class Trainer:
 		epoch_loss = torch.tensor(running_loss / len(dataloader), device=self.device)
 		epoch_gen_loss = torch.tensor(running_gen_loss / len(dataloader), device=self.device)
 		epoch_disc_loss = torch.tensor(running_disc_loss / len(dataloader), device=self.device)
+		epoch_submersion_loss = torch.tensor(running_submersion_loss / len(dataloader), device=self.device)
 		
 		if self.is_ddp:
 			dist.all_reduce(epoch_loss, op=dist.ReduceOp.AVG)
 			dist.all_reduce(epoch_gen_loss, op=dist.ReduceOp.AVG)
 			dist.all_reduce(epoch_disc_loss, op=dist.ReduceOp.AVG)
+			dist.all_reduce(epoch_submersion_loss, op=dist.ReduceOp.AVG)
 
 		# Aggregate accuracy stats
 		total_tokens = torch.tensor(total_tokens, device=self.device)
@@ -343,6 +387,7 @@ class Trainer:
 			epoch_loss.item(),
 			epoch_gen_loss.item(),
 			epoch_disc_loss.item(),
+			epoch_submersion_loss.item(),
 			token_accuracy.item(),
 			exact_accuracy.item(),
 		)
@@ -360,8 +405,17 @@ class Trainer:
 			self.current_epoch = epoch + 1
 			self.optimizer.zero_grad(set_to_none=True)
 
-			train_loss, train_gen_loss, train_disc_loss = self._train_one_epoch(pbar, metrics_dict, epoch)
-			val_loss, val_gen_loss, val_disc_loss, val_token_acc, val_exact_acc = self._evaluate(self.val_loader)
+			train_loss, train_gen_loss, train_disc_loss, train_sub_loss = self._train_one_epoch(
+				pbar, metrics_dict, epoch
+			)
+			(
+				val_loss,
+				val_gen_loss,
+				val_disc_loss,
+				val_sub_loss,
+				val_token_acc,
+				val_exact_acc,
+			) = self._evaluate(self.val_loader)
 
 			if self.is_main_process:
 				metrics_dict["train_loss"] = f"{train_loss:.4f}"
@@ -381,6 +435,9 @@ class Trainer:
 				if self.electra_task:
 					log_data["Loss/train_discriminator"] = train_disc_loss
 					log_data["Loss/val_discriminator"] = val_disc_loss
+				if self.use_submersion:
+					log_data["Loss/train_submersion"] = train_sub_loss
+					log_data["Loss/val_submersion"] = val_sub_loss
 
 				self.logger.log(log_data, self.current_epoch)
 

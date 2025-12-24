@@ -77,18 +77,24 @@ class Bart(nn.Module):
 	def forward(self, encoder_input, decoder_input, layer_pasts=None):
 		# Encoder forward
 		encoder_emb = self.drop(self.encoder_emb(encoder_input))
-		encoder_hidden_states, electra_logits = self.encoder(encoder_emb, self.freqs_cos, self.freqs_sin)
+		original_encoder_hidden_states, electra_logits = self.encoder(
+			encoder_emb, self.freqs_cos, self.freqs_sin
+		)
+
+		reconstructed_encoder_hidden_states = None
+		decoder_cross_attention_states = original_encoder_hidden_states
 
 		# Optional Submersion/Immersion
 		if self.config.use_submersion:
-			latent_z = self.submersion(encoder_hidden_states)
-			encoder_hidden_states = self.immersion(latent_z, encoder_input.size(1))
+			latent_z = self.submersion(original_encoder_hidden_states)
+			reconstructed_encoder_hidden_states = self.immersion(latent_z, encoder_input.size(1))
+			decoder_cross_attention_states = reconstructed_encoder_hidden_states
 
 		# Decoder forward
 		decoder_emb = self.drop(self.decoder_emb(decoder_input))
 		decoder_output, new_layer_pasts = self.decoder(
 			decoder_emb,
-			encoder_hidden_states,
+			decoder_cross_attention_states,
 			self.freqs_cos,
 			self.freqs_sin,
 			layer_pasts=layer_pasts,
@@ -96,4 +102,10 @@ class Bart(nn.Module):
 
 		logits = self.lm_head(decoder_output)
 
-		return logits, new_layer_pasts, electra_logits
+		return (
+			logits,
+			new_layer_pasts,
+			electra_logits,
+			original_encoder_hidden_states,
+			reconstructed_encoder_hidden_states,
+		)
