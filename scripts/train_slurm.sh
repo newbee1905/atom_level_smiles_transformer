@@ -44,7 +44,12 @@ conda activate rust_build_env
 export LIBCLANG_PATH="$CONDA_PREFIX/lib"
 export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:$LD_LIBRARY_PATH"
 
-echo "Libclang path set to: $LIBCLANG_PATH"
+echo "Build Env Ready."
+echo "Rustc path: $(which rustc)"
+echo "Clang path: $(which clang)"
+echo "Libclang path: $LIBCLANG_PATH"
+
+unset CONDA_PREFIX
 
 # Activate the virtual environment
 echo "Activating virtual environment..."
