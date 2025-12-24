@@ -162,6 +162,7 @@ class Trainer:
 		self.best_epoch = 0
 		self.epochs_no_improve = 0
 		self.early_stopping_patience = self.cfg.training.get("early_stopping_patience", 3)
+		self.global_step = 0
 
 		self.logger = UnifiedLogger(cfg, self.output_dir, self.rank)
 
@@ -237,6 +238,7 @@ class Trainer:
 				self.scaler.update()
 				self.optimizer.zero_grad(set_to_none=True)
 				self.scheduler.step()
+				self.global_step += 1
 
 			running_loss += loss.item() * self.grad_accum_steps
 			running_gen_loss += gen_loss.item()
@@ -247,6 +249,9 @@ class Trainer:
 				metrics_dict["lr"] = f"{self.optimizer.param_groups[0]['lr']:.6f}"
 				metrics_dict["phase"] = "train"
 				pbar.set_postfix(metrics_dict)
+				if (batch_idx + 1) % self.grad_accum_steps == 0 or (batch_idx + 1) == len(self.train_loader):
+					self.logger.log({"Loss/batch": loss.item() * self.grad_accum_steps}, self.global_step)
+					self.logger.log({"lr_per_batch": self.optimizer.param_groups[0]['lr']}, self.global_step)
 
 		epoch_loss = torch.tensor(running_loss / len(self.train_loader.dataset), device=self.device)
 		epoch_gen_loss = torch.tensor(running_gen_loss / len(self.train_loader), device=self.device)
