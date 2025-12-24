@@ -24,8 +24,18 @@ set -euo pipefail
 
 # --- Environment Setup ---
 echo "Loading modules..."
+
 # Note: This line is cluster-specific. Adjust if necessary.
 module load NVHPC/24.9-CUDA-12.6.0
+module load Anaconda3/2024.02
+
+eval "$(conda shell.bash hook)"
+
+conda activate rust_build_env
+
+export LIBCLANG_PATH="$CONDA_PREFIX/lib"
+export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:$LD_LIBRARY_PATH"
+
 
 echo "Activating virtual environment..."
 source .venv/bin/activate
