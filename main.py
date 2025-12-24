@@ -1,48 +1,119 @@
+import os
 import hydra
 from omegaconf import DictConfig, OmegaConf
+
+import torch
+import torch.distributed as dist
+from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
+
 from model.bart import Bart
 from chemformer_rs.tokenizer import SMILESTokenizer
+from dataset.zinc import ZincDataset
+from trainer import Trainer
+
+
+def setup():
+	if "WORLD_SIZE" in os.environ:
+		dist.init_process_group(backend="nccl")
+		rank = int(os.environ["RANK"])
+		local_rank = int(os.environ["LOCAL_RANK"])
+		world_size = int(os.environ["WORLD_SIZE"])
+		torch.cuda.set_device(local_rank)
+		device = torch.device("cuda", local_rank)
+		is_ddp = True
+	else:
+		rank = 0
+		world_size = 1
+		local_rank = 0
+		device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+		is_ddp = False
+	return rank, world_size, device, local_rank, is_ddp
+
+
+def cleanup_ddp():
+	if "WORLD_SIZE" in os.environ:
+		dist.destroy_process_group()
 
 
 def count_parameters(model):
-	"""
-	Counts the total number of trainable parameters in a given PyTorch model.
-	"""
 	num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 	if num_params >= 1_000_000:
 		return f"{num_params / 1_000_000:.1f}M"
-	elif num_params >= 1_000:
-		return f"{num_params / 1_000:.1f}K"
-	else:
-		return str(num_params)
+	return f"{num_params / 1_000:.1f}K"
 
 
-@hydra.main(config_path="config", config_name="model", version_base="1.3")
+@hydra.main(config_path="config", config_name="train_config", version_base="1.3")
 def main(cfg: DictConfig):
-	"""
-	Initializes a BART model using Hydra configuration and prints its total number of parameters.
-	"""
-	print(f"Hydra configuration:\n{OmegaConf.to_yaml(cfg)}")
+	rank, world_size, device, local_rank, is_ddp = setup()
 
-	tokenizer = SMILESTokenizer.from_vocab("config/vocab.yaml")
-	print(f"Tokenizer loaded with {tokenizer.vocab_size} tokens.")
+	if rank == 0:
+		print(f"Hydra configuration:\n{OmegaConf.to_yaml(cfg)}")
+		print(f"Running on device: {device}")
 
-	test_smiles = "CCOc1ccc(C=C(C#N)C(=O)O)cc1"
-	encoded, _ = tokenizer.encode(test_smiles)
-	decoded = tokenizer.decode_to_string(encoded)
-	print(f"Original SMILES: {test_smiles}")
-	print(f"Encoded token ids: {encoded}")
-	print(f"Decoded SMILES: {decoded}")
+	tokenizer = SMILESTokenizer.from_vocab(hydra.utils.to_absolute_path(cfg.model.vocab_path))
+	if rank == 0:
+		print(f"Tokenizer loaded with {tokenizer.vocab_size} tokens.")
 
-	# Temporarily disable strict mode
-	OmegaConf.set_struct(cfg, False)  
-	cfg.vocab_size = tokenizer.vocab_size
-	OmegaConf.set_struct(cfg, True) 
+	lmdb_path = hydra.utils.to_absolute_path(cfg.dataset.lmdb_path)
 
-	model = Bart(cfg)
+	train_indices = ZincDataset.read_split_indices(lmdb_path, "train")
+	train_ds = ZincDataset(
+		lmdb_path=lmdb_path,
+		subset_indices=train_indices,
+		tokenizer=tokenizer,
+		max_length=cfg.model.max_length,
+		is_training=True,
+	)
+	train_sampler = DistributedSampler(train_ds, num_replicas=world_size, rank=rank, shuffle=True) if is_ddp else None
+	train_dl = DataLoader(
+		train_ds,
+		batch_size=cfg.training.batch_size,
+		sampler=train_sampler,
+		shuffle=(train_sampler is None),
+		num_workers=cfg.training.num_workers,
+		pin_memory=True,
+	)
 
-	num_params = count_parameters(model)
-	print(f"Total number of trainable parameters in the BART model: {num_params}")
+	val_indices = ZincDataset.read_split_indices(lmdb_path, "val")
+	val_ds = ZincDataset(
+		lmdb_path=lmdb_path,
+		subset_indices=val_indices,
+		tokenizer=tokenizer,
+		max_length=cfg.model.max_length,
+		is_training=False,
+	)
+	val_sampler = DistributedSampler(val_ds, num_replicas=world_size, rank=rank, shuffle=False) if is_ddp else None
+	val_dl = DataLoader(
+		val_ds,
+		batch_size=cfg.training.batch_size,
+		sampler=val_sampler,
+		shuffle=False,
+		num_workers=cfg.training.num_workers,
+		pin_memory=True,
+	)
+
+	OmegaConf.set_struct(cfg, False)
+	cfg.model.vocab_size = tokenizer.vocab_size
+	cfg.model.pad_token_id = tokenizer.token_to_index("<PAD>")
+	OmegaConf.set_struct(cfg, True)
+
+	model = Bart(cfg.model).to(device)
+	if rank == 0:
+		print(f"Total number of trainable parameters in the BART model: {count_parameters(model)}")
+
+	trainer = Trainer(
+		cfg=cfg,
+		model=model,
+		train_loader=train_dl,
+		val_loader=val_dl,
+		device=device,
+		rank=rank,
+		world_size=world_size,
+	)
+
+	trainer.train()
+	cleanup_ddp()
 
 
 if __name__ == "__main__":
