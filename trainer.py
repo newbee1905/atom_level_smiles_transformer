@@ -184,7 +184,7 @@ class Trainer:
 				model_to_save = model_to_save._orig_mod
 		return model_to_save
 
-	sdef save_checkpoint(self, path, epoch, best=True):
+	def save_checkpoint(self, path, epoch, best=True):
 		"""Save training checkpoint."""
 		if not self.is_main_process:
 			return
@@ -345,17 +345,16 @@ class Trainer:
 			running_disc_loss += disc_loss.item()
 			running_submersion_loss += submersion_loss.item()
 
+			# Accuracy calculation
+			preds = torch.argmax(gen_logits, dim=-1)
+			mask = batch["tgt"] != pad_id
+			correct_tokens += torch.sum(preds[mask] == batch["tgt"][mask]).item()
+			total_tokens += torch.sum(mask).item()
 
-					# Accuracy calculation
-				preds = torch.argmax(gen_logits, dim=-1)
-				mask = batch["tgt"] != pad_id
-				correct_tokens += torch.sum(preds[mask] == batch["tgt"][mask]).item()
-				total_tokens += torch.sum(mask).item()
-
-					# Exact match calculation
-				correct_in_sequence = (preds == batch["tgt"]) | ~mask
-				exact_matches += torch.all(correct_in_sequence, dim=1).sum().item()
-				total_sequences += batch["tgt"].size(0)
+			# Exact match calculation
+			correct_in_sequence = (preds == batch["tgt"]) | ~mask
+			exact_matches += torch.all(correct_in_sequence, dim=1).sum().item()
+			total_sequences += batch["tgt"].size(0)
 
 		# Aggregate losses
 		epoch_loss = torch.tensor(running_loss / len(dataloader), device=self.device)
