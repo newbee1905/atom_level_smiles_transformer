@@ -29,6 +29,7 @@ dependencies = [
     "python-dotenv",
     "tensorboardx>=2.6.4",
     "tensorboard>=2.20.0",
+    "zstandard>=0.22.0",
 ]
 
 [tool.maturin]
