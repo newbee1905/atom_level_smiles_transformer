@@ -6,7 +6,10 @@ import pandas as pd
 from tqdm import tqdm
 from collections import defaultdict
 
-import pickle
+import io
+
+import zstandard as zstd
+from pyroaring import BitMap
 
 
 def count_rows_fast(csv_path):
@@ -62,7 +65,7 @@ def main():
 	txn = env.begin(write=True)
 
 	# Dictionary to track indices for each split (e.g., 'train', 'val', 'test')
-	split_indices = defaultdict(list)
+	split_indices = defaultdict(BitMap)
 
 	try:
 		with tqdm(
@@ -83,7 +86,7 @@ def main():
 
 						for i in range(len(smiles_list)):
 							split_name = str(sets_list[i])
-							split_indices[split_name].append(count)
+							split_indices[split_name].add(count)
 
 							key = f"{count}".encode("ascii")
 							value = str(smiles_list[i]).encode("utf-8")
@@ -101,9 +104,18 @@ def main():
 				except Exception as e:
 					print(f"\n[Error] Failed to process {file_path}: {e}")
 
-		for split_name, indices in split_indices.items():
+		cctx = zstd.ZstdCompressor()
+		for split_name, bitmap in split_indices.items():
 			split_key = f"split_{split_name}".encode("ascii")
-			txn.put(split_key, pickle.dumps(indices, protocol=pickle.HIGHEST_PROTOCOL))
+
+			# Serialize the bitmap to bytes
+			raw_bytes = bitmap.serialize()
+
+			compressed_indices = cctx.compress(raw_bytes)
+			txn.put(split_key, compressed_indices)
+			print(
+				f" - Storing compressed '{split_name}' indices ({len(raw_bytes):,} bytes -> {len(compressed_indices):,} bytes)"
+			)
 
 		txn.put(b"__len__", str(count).encode("ascii"))
 		txn.commit()

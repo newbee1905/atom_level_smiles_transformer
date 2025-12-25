@@ -30,6 +30,7 @@ dependencies = [
     "tensorboardx>=2.6.4",
     "tensorboard>=2.20.0",
     "zstandard>=0.22.0",
+    "pyroaring>=1.0.3",
 ]
 
 [tool.maturin]

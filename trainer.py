@@ -11,6 +11,7 @@ import itertools
 
 from optimizer import Muon, DistMuon
 
+
 # Unified logger for TensorBoard and WandB
 class UnifiedLogger:
 	def __init__(self, cfg: DictConfig, hydra_output_dir: Path, rank: int):
@@ -59,6 +60,7 @@ class UnifiedLogger:
 				self.writer.finish()
 			else:
 				self.writer.close()
+
 
 class Trainer:
 	def __init__(
@@ -227,8 +229,8 @@ class Trainer:
 					_,
 					disc_logits,
 					original_hidden,
-				reconstructed_hidden,
-			) = self.model(batch["src"], batch["tgt"])
+					reconstructed_hidden,
+				) = self.model(batch["src"], batch["tgt"])
 
 				# Apply soft-capping to generator logits
 				if self.use_softcap:
@@ -277,7 +279,7 @@ class Trainer:
 				pbar.set_postfix(metrics_dict)
 				if (batch_idx + 1) % self.grad_accum_steps == 0 or (batch_idx + 1) == len(self.train_loader):
 					self.logger.log({"Loss/batch": loss.item() * self.grad_accum_steps}, self.global_step)
-					self.logger.log({"lr_per_batch": self.optimizer.param_groups[0]['lr']}, self.global_step)
+					self.logger.log({"lr_per_batch": self.optimizer.param_groups[0]["lr"]}, self.global_step)
 
 		epoch_loss = torch.tensor(running_loss / len(self.train_loader.dataset), device=self.device)
 		epoch_gen_loss = torch.tensor(running_gen_loss / len(self.train_loader), device=self.device)
@@ -319,7 +321,7 @@ class Trainer:
 						_,
 						disc_logits,
 						original_hidden,
-					reconstructed_hidden,
+						reconstructed_hidden,
 					) = self.model(batch["src"], batch["tgt"])
 
 					if self.use_softcap:
@@ -361,7 +363,7 @@ class Trainer:
 		epoch_gen_loss = torch.tensor(running_gen_loss / len(dataloader), device=self.device)
 		epoch_disc_loss = torch.tensor(running_disc_loss / len(dataloader), device=self.device)
 		epoch_submersion_loss = torch.tensor(running_submersion_loss / len(dataloader), device=self.device)
-		
+
 		if self.is_ddp:
 			dist.all_reduce(epoch_loss, op=dist.ReduceOp.AVG)
 			dist.all_reduce(epoch_gen_loss, op=dist.ReduceOp.AVG)

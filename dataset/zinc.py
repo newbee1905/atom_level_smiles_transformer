@@ -1,8 +1,9 @@
-import pickle
+from pyroaring import BitMap
 
 import lmdb
 import numpy as np
 import torch
+import zstandard as zstd
 from rdkit import Chem
 from torch.utils.data import Dataset
 
@@ -60,7 +61,13 @@ class ZincDataset(Dataset):
 	def read_split_indices(cls, lmdb_path, split_name):
 		env = lmdb.open(lmdb_path, readonly=True, lock=False)
 		with env.begin(write=False) as txn:
-			split_indices = pickle.loads(txn.get(f"split_{split_name}".encode("ascii")))
+			compressed_indices = txn.get(f"split_{split_name}".encode("ascii"))
+			if compressed_indices is None:
+				raise ValueError(f"Split '{split_name}' not found in LMDB at {lmdb_path}")
+
+			raw_bytes = zstd.decompress(compressed_indices)
+			bitmap = BitMap.deserialize(raw_bytes)
+			split_indices = np.array(bitmap, dtype=np.uint32)
 		return split_indices
 
 	def randomize_smiles(self, smiles):
