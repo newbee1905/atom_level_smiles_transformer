@@ -7,6 +7,10 @@ hydra:
   run:
     dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
 
+wandb:
+  project: "chemformer"
+  name: null
+
 model:
   vocab_path: config/vocab.yaml
   max_length: ${model.block_size}

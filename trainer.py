@@ -28,14 +28,25 @@ class UnifiedLogger:
 				import wandb
 				from dotenv import load_dotenv
 
-				load_dotenv()
-				wandb.init(
-					project=cfg.wandb.project,
-					name=cfg.wandb.get("name", hydra_output_dir.name),
-					config=OmegaConf.to_container(cfg, resolve=True),
-					dir=str(hydra_output_dir),
-				)
-				self.writer = wandb
+				wandb_cfg = cfg.get("wandb")
+				if not wandb_cfg or not wandb_cfg.get("project"):
+					print(
+						"Warning: wandb logger enabled but 'wandb.project' not configured. Falling back to TensorBoard."
+					)
+					self.logger_type = "tensorboard"
+					self.is_wandb = False
+				else:
+					load_dotenv()
+					model_name = cfg.model.get("name", "model")
+					run_name = wandb_cfg.get("name") or f"{model_name}-{hydra_output_dir.name}"
+
+					wandb.init(
+						project=wandb_cfg.project,
+						name=run_name,
+						config=OmegaConf.to_container(cfg, resolve=True),
+						dir=str(hydra_output_dir),
+					)
+					self.writer = wandb
 			except ImportError:
 				print("wandb not installed, falling back to tensorboard")
 				self.logger_type = "tensorboard"
@@ -281,7 +292,7 @@ class Trainer:
 					self.logger.log({"Loss/batch": loss.item() * self.grad_accum_steps}, self.global_step)
 					self.logger.log({"lr_per_batch": self.optimizer.param_groups[0]["lr"]}, self.global_step)
 
-		epoch_loss = torch.tensor(running_loss / len(self.train_loader.dataset), device=self.device)
+		epoch_loss = torch.tensor(running_loss / len(self.train_loader), device=self.device)
 		epoch_gen_loss = torch.tensor(running_gen_loss / len(self.train_loader), device=self.device)
 		epoch_disc_loss = torch.tensor(running_disc_loss / len(self.train_loader), device=self.device)
 		epoch_submersion_loss = torch.tensor(running_submersion_loss / len(self.train_loader), device=self.device)
