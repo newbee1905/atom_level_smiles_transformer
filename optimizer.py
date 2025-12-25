@@ -1,6 +1,7 @@
 import torch
 from torch import Tensor
 from typing import List, Dict, Any
+import torch.distributed as dist
 
 
 @torch.compile
