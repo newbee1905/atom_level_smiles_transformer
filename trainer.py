@@ -7,6 +7,7 @@ import hydra
 from omegaconf import DictConfig, OmegaConf
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
+from transformers import get_linear_schedule_with_warmup
 import itertools
 
 from optimizer import Muon, DistMuon
@@ -167,11 +168,14 @@ class Trainer:
 		else:
 			self.optimizer = Muon(param_groups, lr=optimizer_cfg.lr, weight_decay=optimizer_cfg.weight_decay)
 
-		self.scheduler = OneCycleLR(
+		optimizer_cfg = self.cfg.training.optimizer
+		total_steps = (len(self.train_loader) * self.cfg.training.epochs) // self.grad_accum_steps
+		warmup_steps = optimizer_cfg.get("warmup_steps", 10000)
+
+		self.scheduler = get_linear_schedule_with_warmup(
 			self.optimizer,
-			max_lr=self.optimizer.param_groups[0]["lr"],
-			total_steps=(len(self.train_loader) * self.cfg.training.epochs) // self.grad_accum_steps,
-			cycle_momentum=False,
+			num_warmup_steps=warmup_steps,
+			num_training_steps=total_steps
 		)
 
 		self.grad_clip = self.cfg.training.get("grad_clip", 1.0)
