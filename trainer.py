@@ -277,6 +277,8 @@ class Trainer:
 				self.optimizer.zero_grad(set_to_none=True)
 				self.scheduler.step()
 				self.global_step += 1
+				if self.is_main_process:
+					pbar.update(1)
 
 			running_loss += loss.item() * self.grad_accum_steps
 			running_gen_loss += gen_loss.item()
@@ -286,11 +288,10 @@ class Trainer:
 			if self.is_main_process:
 				metrics_dict["batch_loss"] = f"{loss.item() * self.grad_accum_steps:.4f}"
 				metrics_dict["lr"] = f"{self.optimizer.param_groups[0]['lr']:.6f}"
-				metrics_dict["phase"] = "train"
 				pbar.set_postfix(metrics_dict)
 				if (batch_idx + 1) % self.grad_accum_steps == 0 or (batch_idx + 1) == len(self.train_loader):
 					self.logger.log({"Loss/batch": loss.item() * self.grad_accum_steps}, self.global_step)
-					self.logger.log({"lr_per_batch": self.optimizer.param_groups[0]["lr"]}, self.global_step)
+					self.logger.log({"lr_per_batch": self.optimizer.param_groups[0]['lr']}, self.global_step)
 
 		epoch_loss = torch.tensor(running_loss / len(self.train_loader), device=self.device)
 		epoch_gen_loss = torch.tensor(running_gen_loss / len(self.train_loader), device=self.device)
@@ -405,73 +406,72 @@ class Trainer:
 		)
 
 	def train(self):
-		pbar = tqdm(
-			range(self.epochs),
-			total=self.epochs,
-			desc="Training Progress",
-			disable=not self.is_main_process,
-		)
+		total_steps = (len(self.train_loader) * self.epochs) // self.grad_accum_steps
 		metrics_dict = {"phase": "train", "best_metric": f"{self.best_metric:.4f}"}
 
-		for epoch in pbar:
-			self.current_epoch = epoch + 1
-			self.optimizer.zero_grad(set_to_none=True)
+		with tqdm(total=total_steps, desc="Training Progress", disable=not self.is_main_process) as pbar:
+			for epoch in range(self.epochs):
+				self.current_epoch = epoch + 1
+				self.optimizer.zero_grad(set_to_none=True)
 
-			train_loss, train_gen_loss, train_disc_loss, train_sub_loss = self._train_one_epoch(
-				pbar, metrics_dict, epoch
-			)
-			(
-				val_loss,
-				val_gen_loss,
-				val_disc_loss,
-				val_sub_loss,
-				val_token_acc,
-				val_exact_acc,
-			) = self._evaluate(self.val_loader)
-
-			if self.is_main_process:
-				metrics_dict["train_loss"] = f"{train_loss:.4f}"
-				metrics_dict["val_loss"] = f"{val_loss:.4f}"
-				metrics_dict["val_token_acc"] = f"{val_token_acc:.4f}"
-				metrics_dict["val_exact_acc"] = f"{val_exact_acc:.4f}"
-
-				log_data = {
-					"Loss/train": train_loss,
-					"Loss/val": val_loss,
-					"Loss/train_generator": train_gen_loss,
-					"Loss/val_generator": val_gen_loss,
-					"Accuracy/token_val": val_token_acc,
-					"Accuracy/exact_val": val_exact_acc,
-					"lr": self.optimizer.param_groups[0]["lr"],
-				}
-				if self.electra_task:
-					log_data["Loss/train_discriminator"] = train_disc_loss
-					log_data["Loss/val_discriminator"] = val_disc_loss
-				if self.use_submersion:
-					log_data["Loss/train_submersion"] = train_sub_loss
-					log_data["Loss/val_submersion"] = val_sub_loss
-
-				self.logger.log(log_data, self.current_epoch)
-
-				current_metric = val_loss
-				if current_metric < self.best_metric:
-					self.best_metric = current_metric
-					self.best_epoch = self.current_epoch
-					self.save_checkpoint(self.best_model_path, self.current_epoch, best=True)
-					self.epochs_no_improve = 0
-					metrics_dict["best_metric"] = f"{self.best_metric:.4f}"
-				else:
-					self.epochs_no_improve += 1
-
-				pbar.set_postfix(metrics_dict)
-
-			if self.is_ddp:
-				dist.barrier()
-
-			if self.epochs_no_improve >= self.early_stopping_patience:
 				if self.is_main_process:
-					print(f"\nEarly stopping triggered after {self.epochs_no_improve} epochs with no improvement.")
-				break
+					metrics_dict["epoch"] = f"{self.current_epoch}/{self.epochs}"
+
+				train_loss, train_gen_loss, train_disc_loss, train_sub_loss = self._train_one_epoch(
+					pbar, metrics_dict, epoch
+				)
+				(
+					val_loss,
+					val_gen_loss,
+					val_disc_loss,
+					val_sub_loss,
+					val_token_acc,
+					val_exact_acc,
+				) = self._evaluate(self.val_loader)
+
+				if self.is_main_process:
+					metrics_dict["train_loss"] = f"{train_loss:.4f}"
+					metrics_dict["val_loss"] = f"{val_loss:.4f}"
+					metrics_dict["val_token_acc"] = f"{val_token_acc:.4f}"
+					metrics_dict["val_exact_acc"] = f"{val_exact_acc:.4f}"
+
+					log_data = {
+						"Loss/train": train_loss,
+						"Loss/val": val_loss,
+						"Loss/train_generator": train_gen_loss,
+						"Loss/val_generator": val_gen_loss,
+						"Accuracy/token_val": val_token_acc,
+						"Accuracy/exact_val": val_exact_acc,
+						"lr": self.optimizer.param_groups[0]["lr"],
+					}
+					if self.electra_task:
+						log_data["Loss/train_discriminator"] = train_disc_loss
+						log_data["Loss/val_discriminator"] = val_disc_loss
+					if self.use_submersion:
+						log_data["Loss/train_submersion"] = train_sub_loss
+						log_data["Loss/val_submersion"] = val_sub_loss
+
+					self.logger.log(log_data, self.current_epoch)
+
+					current_metric = val_loss
+					if current_metric < self.best_metric:
+						self.best_metric = current_metric
+						self.best_epoch = self.current_epoch
+						self.save_checkpoint(self.best_model_path, self.current_epoch, best=True)
+						self.epochs_no_improve = 0
+						metrics_dict["best_metric"] = f"{self.best_metric:.4f}"
+					else:
+						self.epochs_no_improve += 1
+
+					pbar.set_postfix(metrics_dict)
+
+				if self.is_ddp:
+					dist.barrier()
+
+				if self.epochs_no_improve >= self.early_stopping_patience:
+					if self.is_main_process:
+						print(f"\nEarly stopping triggered after {self.epochs_no_improve} epochs with no improvement.")
+					break
 
 		if self.is_ddp:
 			dist.barrier()
