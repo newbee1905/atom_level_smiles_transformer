@@ -15,9 +15,9 @@ class ZincDataset(Dataset):
 		tokenizer,
 		max_length,
 		subset_indices=None,
-		mask_prob=0.15,
-		span_len=3,
-		augment_prob=0.5,
+		mask_prob=0.30,
+		span_len=3, 
+		augment_prob=1.0,
 		is_training=False,
 	):
 		self.lmdb_path = lmdb_path
@@ -76,36 +76,34 @@ class ZincDataset(Dataset):
 		return Chem.MolToSmiles(mol, doRandom=True, canonical=False) if mol else smiles
 
 	def apply_span_masking(self, token_ids: np.ndarray):
-		"""Replaces contiguous spans of tokens with <mask>."""
+		"""
+		Replaces contiguous spans of tokens with <mask>.
+		Span lengths are sampled from a Poisson distribution (lambda=self.span_len).
+		"""
 		n = len(token_ids)
-		if n == 0:
-			return token_ids, np.array([], dtype=bool)
-
-		num_to_mask = max(1, int(n * self.mask_prob))
-
 		mask = np.zeros(n, dtype=bool)
 		num_masked = 0
+		
+		# Target number of tokens to mask
+		num_to_mask = int(round(n * self.mask_prob))
+		if num_to_mask == 0:
+			return token_ids, mask
 
 		while num_masked < num_to_mask:
-			start = np.random.randint(0, n)
-			length = np.random.randint(1, self.span_len + 1)
-			end = min(start + length, n)
-			mask[start:end] = True
+			# Sample span length; must be at least 1.
+			span_length = max(1, np.random.poisson(self.span_len))
+			
+			# Sample a start index, ensuring the span doesn't go out of bounds.
+			# Allow sampling from already masked regions; subsequent masks will just merge.
+			start = np.random.randint(0, n - span_length + 1)
+			
+			# Apply mask
+			mask[start : start + span_length] = True
 			num_masked = np.sum(mask)
-
-		# If we've masked too much, randomly unmask some tokens
-		masked_indices_locs = np.where(mask)[0]
-		if len(masked_indices_locs) > num_to_mask:
-			to_unmask = np.random.choice(
-				masked_indices_locs,
-				size=len(masked_indices_locs) - num_to_mask,
-				replace=False,
-			)
-			mask[to_unmask] = False
 
 		masked_token_ids = np.copy(token_ids)
 		masked_token_ids[mask] = self.mask_token_id
-
+		
 		return masked_token_ids, mask
 
 	def __getitem__(self, index):
@@ -126,7 +124,7 @@ class ZincDataset(Dataset):
 			add_bos=False,
 			add_eos=False,
 			pad_to_length=False,
-			max_length=self.max_length - 2,  # Leave space for BOS/EOS
+			max_length=self.max_length - 2, # Leave space for BOS/EOS
 		)
 		core_token_ids = np.array(core_token_ids)
 
