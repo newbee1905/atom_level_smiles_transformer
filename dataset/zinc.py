@@ -16,9 +16,11 @@ class ZincDataset(Dataset):
 		max_length,
 		subset_indices=None,
 		mask_prob=0.30,
-		span_len=3, 
+		span_len=3,
 		augment_prob=1.0,
 		is_training=False,
+		span_mask_proportion=1.0,
+		span_random_proportion=0.0,
 	):
 		self.lmdb_path = lmdb_path
 		self.tokenizer = tokenizer
@@ -28,6 +30,8 @@ class ZincDataset(Dataset):
 		self.augment_prob = augment_prob
 		self.is_training = is_training
 		self.indices = subset_indices
+		self.span_mask_proportion = span_mask_proportion
+		self.span_random_proportion = span_random_proportion
 		self.env = None
 
 		# Get special token IDs
@@ -35,6 +39,15 @@ class ZincDataset(Dataset):
 		self.pad_token_id = self.tokenizer.token_to_index("<PAD>")
 		self.bos_token_id = self.tokenizer.token_to_index("<BOS>")
 		self.eos_token_id = self.tokenizer.token_to_index("<EOS>")
+		self.unk_token_id = self.tokenizer.token_to_index("<UNK>")
+		self.vocab_size = self.tokenizer.vocab_size
+		self.special_token_ids = {
+			self.mask_token_id,
+			self.pad_token_id,
+			self.bos_token_id,
+			self.eos_token_id,
+			self.unk_token_id,
+		}
 
 		env = lmdb.open(self.lmdb_path, readonly=True, lock=False)
 		with env.begin(write=False) as txn:
@@ -77,34 +90,72 @@ class ZincDataset(Dataset):
 
 	def apply_span_masking(self, token_ids: np.ndarray):
 		"""
-		Replaces contiguous spans of tokens with <mask>.
-		Span lengths are sampled from a Poisson distribution (lambda=self.span_len).
+		Applies a mixed-strategy span masking to the token sequence.
+		Spans of tokens are replaced by a single token, which can be either a
+		special <MASK> token or a random token from the vocabulary, based on
+		the configured proportions.
+
+		Returns:
+			- new_tokens (np.ndarray): The corrupted token sequence.
+			- to_mask (np.ndarray): A boolean mask aligned with the *original*
+			  token sequence, indicating which tokens were part of a masked span.
+			- is_fake (np.ndarray): A boolean mask aligned with the *new*
+			  (corrupted) token sequence, indicating which tokens are "fake".
 		"""
 		n = len(token_ids)
-		mask = np.zeros(n, dtype=bool)
+
+		if n == 0:
+			return token_ids, np.zeros(0, dtype=bool), np.zeros(0, dtype=bool)
+
+		# Determine which tokens are part of a mask span
+		to_mask = np.zeros(n, dtype=bool)
 		num_masked = 0
-		
-		# Target number of tokens to mask
 		num_to_mask = int(round(n * self.mask_prob))
+
 		if num_to_mask == 0:
-			return token_ids, mask
+			return token_ids, to_mask, np.zeros(n, dtype=bool)
 
 		while num_masked < num_to_mask:
-			# Sample span length; must be at least 1.
-			span_length = max(1, np.random.poisson(self.span_len))
-			
-			# Sample a start index, ensuring the span doesn't go out of bounds.
-			# Allow sampling from already masked regions; subsequent masks will just merge.
-			start = np.random.randint(0, n - span_length + 1)
-			
-			# Apply mask
-			mask[start : start + span_length] = True
-			num_masked = np.sum(mask)
+			# Clamp span_length so it cannot exceed n
+			sampled_len = max(1, np.random.poisson(self.span_len))
+			span_length = min(sampled_len, n)
 
-		masked_token_ids = np.copy(token_ids)
-		masked_token_ids[mask] = self.mask_token_id
-		
-		return masked_token_ids, mask
+			start = np.random.randint(0, n - span_length + 1)
+
+			to_mask[start : start + span_length] = True
+			num_masked = np.sum(to_mask)
+
+		# Collapse spans into single tokens and generate fake mask
+		new_tokens = []
+		is_fake = []
+
+		i = 0
+		while i < n:
+			if to_mask[i]:
+				# Start of a masked span, this new token is "fake"
+				is_fake.append(True)
+
+				# Decide whether to use <MASK> or a random token
+				if np.random.rand() < self.span_mask_proportion:
+					new_tokens.append(self.mask_token_id)
+				else:
+					# Sample a random token, avoiding special tokens
+					while True:
+						random_token_id = np.random.randint(0, self.vocab_size)
+						if random_token_id not in self.special_token_ids:
+							break
+					new_tokens.append(random_token_id)
+
+				# Skip all contiguous tokens in this masked span
+				while i < n and to_mask[i]:
+					i += 1
+			else:
+				# Not masked, keep original and mark as not "fake"
+				new_tokens.append(token_ids[i])
+				is_fake.append(False)
+				i += 1
+
+		return np.array(new_tokens), to_mask, np.array(is_fake)
 
 	def __getitem__(self, index):
 		if self.env is None:
@@ -124,12 +175,12 @@ class ZincDataset(Dataset):
 			add_bos=False,
 			add_eos=False,
 			pad_to_length=False,
-			max_length=self.max_length - 2, # Leave space for BOS/EOS
+			max_length=self.max_length - 2,  # Leave space for BOS/EOS
 		)
 		core_token_ids = np.array(core_token_ids)
 
 		# Apply span masking to create the source sequence
-		masked_core_token_ids, span_mask_unpadded = self.apply_span_masking(core_token_ids)
+		masked_core_token_ids, span_mask_unpadded, is_fake_unpadded = self.apply_span_masking(core_token_ids)
 
 		# Prepare src and tgt sequences with special tokens and padding
 		def prepare_sequence(ids, pad_id):
@@ -149,11 +200,22 @@ class ZincDataset(Dataset):
 		src_ids, src_attention_mask = prepare_sequence(masked_core_token_ids, self.pad_token_id)
 		tgt_ids, tgt_attention_mask = prepare_sequence(core_token_ids, self.pad_token_id)
 
-		# Pad the span mask, adding False for special tokens and padding
-		padding_len = self.max_length - len(masked_core_token_ids) - 2
+		# Prepare electra_labels (aligned with src)
+		seq_len_src = len(masked_core_token_ids) + 2
+		padding_len_src = self.max_length - seq_len_src
+		electra_labels = np.pad(
+			is_fake_unpadded,
+			(1, 1 + padding_len_src),  # Pad for BOS, EOS, and padding
+			"constant",
+			constant_values=False,
+		)
+
+		# Pad the span mask (aligned with tgt), adding False for special tokens and padding
+		seq_len_tgt = len(core_token_ids) + 2
+		padding_len_tgt = self.max_length - seq_len_tgt
 		span_mask = np.pad(
 			span_mask_unpadded,
-			(1, 1 + padding_len),
+			(1, 1 + padding_len_tgt),
 			"constant",
 			constant_values=False,
 		)
@@ -164,6 +226,7 @@ class ZincDataset(Dataset):
 			"tgt": torch.from_numpy(tgt_ids),
 			"tgt_attention_mask": torch.from_numpy(tgt_attention_mask),
 			"span_mask": torch.from_numpy(span_mask),
+			"electra_labels": torch.from_numpy(electra_labels).float(),
 		}
 
 

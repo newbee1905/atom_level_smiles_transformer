@@ -173,9 +173,7 @@ class Trainer:
 		warmup_steps = optimizer_cfg.get("warmup_steps", 10000)
 
 		self.scheduler = get_linear_schedule_with_warmup(
-			self.optimizer,
-			num_warmup_steps=warmup_steps,
-			num_training_steps=total_steps
+			self.optimizer, num_warmup_steps=warmup_steps, num_training_steps=total_steps
 		)
 
 		self.grad_clip = self.cfg.training.get("grad_clip", 1.0)
@@ -221,11 +219,6 @@ class Trainer:
 		torch.save(checkpoint, path)
 		print(f"Checkpoint saved to {path}")
 
-	def _get_electra_labels(self, src, tgt):
-		# Assumes src is corrupted and tgt is original.
-		# Labels are 1 where src is different from tgt.
-		return (src != tgt).float()
-
 	def _train_one_epoch(self, pbar, metrics_dict, epoch):
 		self.model.train()
 		if self.is_ddp:
@@ -255,8 +248,7 @@ class Trainer:
 				loss = gen_loss
 
 				if self.electra_task and disc_logits is not None:
-					electra_labels = self._get_electra_labels(batch["src"], batch["tgt"])
-					disc_loss = self.electra_criterion(disc_logits, electra_labels)
+					disc_loss = self.electra_criterion(disc_logits, batch["electra_labels"])
 					loss += disc_loss * self.electra_loss_weight
 				else:
 					disc_loss = torch.tensor(0.0)
@@ -295,7 +287,7 @@ class Trainer:
 				pbar.set_postfix(metrics_dict)
 				if (batch_idx + 1) % self.grad_accum_steps == 0 or (batch_idx + 1) == len(self.train_loader):
 					self.logger.log({"Loss/batch": loss.item() * self.grad_accum_steps}, self.global_step)
-					self.logger.log({"lr_per_batch": self.optimizer.param_groups[0]['lr']}, self.global_step)
+					self.logger.log({"lr_per_batch": self.optimizer.param_groups[0]["lr"]}, self.global_step)
 
 		epoch_loss = torch.tensor(running_loss / len(self.train_loader), device=self.device)
 		epoch_gen_loss = torch.tensor(running_gen_loss / len(self.train_loader), device=self.device)
@@ -346,8 +338,7 @@ class Trainer:
 					loss = gen_loss
 
 					if self.electra_task and disc_logits is not None:
-						electra_labels = self._get_electra_labels(batch["src"], batch["tgt"])
-						disc_loss = self.electra_criterion(disc_logits, electra_labels)
+						disc_loss = self.electra_criterion(disc_logits, batch["electra_labels"])
 						loss += disc_loss * self.electra_loss_weight
 					else:
 						disc_loss = torch.tensor(0.0)

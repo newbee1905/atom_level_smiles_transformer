@@ -64,6 +64,11 @@ def main(cfg: DictConfig):
 		tokenizer=tokenizer,
 		max_length=cfg.model.max_length,
 		is_training=True,
+		mask_prob=cfg.dataset.mask_prob,
+		span_len=cfg.dataset.span_len,
+		augment_prob=cfg.dataset.augment_prob,
+		span_mask_proportion=cfg.dataset.span_mask_proportion,
+		span_random_proportion=cfg.dataset.span_random_proportion,
 	)
 	train_sampler = DistributedSampler(train_ds, num_replicas=world_size, rank=rank, shuffle=True) if is_ddp else None
 	train_dl = DataLoader(
@@ -82,6 +87,11 @@ def main(cfg: DictConfig):
 		tokenizer=tokenizer,
 		max_length=cfg.model.max_length,
 		is_training=False,
+		mask_prob=cfg.dataset.mask_prob,
+		span_len=cfg.dataset.span_len,
+		augment_prob=cfg.dataset.augment_prob,
+		span_mask_proportion=cfg.dataset.span_mask_proportion,
+		span_random_proportion=cfg.dataset.span_random_proportion,
 	)
 	val_sampler = DistributedSampler(val_ds, num_replicas=world_size, rank=rank, shuffle=False) if is_ddp else None
 	val_dl = DataLoader(
