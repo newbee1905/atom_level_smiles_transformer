@@ -18,10 +18,19 @@ def count_parameters(model):
 	return f"{num_params / 1_000:.1f}K"
 
 
+def get_gpu_memory_usage(device):
+	"""Returns allocated and reserved memory in GB."""
+	if device.type == "cuda":
+		allocated = torch.cuda.max_memory_allocated(device) / (1024**3)
+		reserved = torch.cuda.max_memory_reserved(device) / (1024**3)
+		return allocated, reserved
+	return 0.0, 0.0
+
+
 @hydra.main(config_path="../config", config_name="train_config", version_base="1.3")
 def main(cfg: DictConfig):
 	"""
-	Main benchmarking function to measure data loading and model processing times.
+	Main benchmarking function to measure data loading, model processing times, and VRAM usage.
 	"""
 	print("--- Training Benchmark Script ---")
 	if cfg.get("bench_steps", 100) < 1:
@@ -29,8 +38,11 @@ def main(cfg: DictConfig):
 		return
 
 	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-	print(f"Running on device: {device}\n")
-	print(f"Hydra configuration:\n{OmegaConf.to_yaml(cfg)}")
+	print(f"Running on device: {device}")
+	if device.type == "cuda":
+		print(f"GPU: {torch.cuda.get_device_name(0)}")
+
+	print(f"\nHydra configuration:\n{OmegaConf.to_yaml(cfg)}")
 
 	print("Setting up tokenizer and dataset...")
 	tokenizer = SMILESTokenizer.from_vocab(hydra.utils.to_absolute_path(cfg.model.vocab_path))
@@ -87,6 +99,13 @@ def main(cfg: DictConfig):
 	model.train()
 
 	for i in range(warmup_steps + num_steps):
+		# --- Memory Reset Hook ---
+		# Reset memory stats right before the benchmark phase begins
+		if i == warmup_steps and device.type == "cuda":
+			torch.cuda.reset_peak_memory_stats(device)
+			# Optional: Empty cache if you want to test pure batch requirement
+			# torch.cuda.empty_cache()
+
 		t_total_start = time.time()
 
 		t_data_start = time.time()
@@ -145,6 +164,14 @@ def main(cfg: DictConfig):
 	total_benchmark_duration = np.sum(total_times)
 	print_stats("Data Loading", data_times, total_benchmark_duration)
 	print_stats("Model Processing (fwd+bwd)", model_times, total_benchmark_duration)
+
+	# Memory Reporting 
+	if device.type == "cuda":
+		max_allocated, max_reserved = get_gpu_memory_usage(device)
+		print("\nMemory Usage (Peak during Benchmark):")
+		print(f"  - Max Allocated: {max_allocated:.2f} GB (Tensor data)")
+		print(f"  - Max Reserved:  {max_reserved:.2f} GB (PyTorch Cache)")
+		print(f"  - Device Name:   {torch.cuda.get_device_name(device)}")
 
 	print("\n--- Overall ---")
 	print(f"Total benchmark time for {num_steps} steps: {total_benchmark_duration:.2f}s")
