@@ -163,28 +163,42 @@ def main(cfg: DictConfig):
 			print(f"  Step {i + 1} completed...")
 
 	# Reporting 
+	print(f"\nThroughput: {1 / np.mean(total_times):.2f} batch/s")
+	print("Benchmark complete.")
+
 	print("\n--- Benchmark Results ---")
 
 	def print_stats(name, timings, total_duration):
 		timings_np = np.array(timings)
 		avg = np.mean(timings_np)
 		std = np.std(timings_np)
+		percent_total = (np.sum(timings_np) / total_duration) * 100 if total_duration > 0 else 0
+
 		print(f"\n{name}:")
-		print(f"  - Avg: {avg:.4f}s | Std: {std:.4f}s")
-		print(f"  - Total: {np.sum(timings_np):.2f}s")
+		print(f"  - Average Time: {avg:.4f}s per batch")
+		print(f"  - Std Dev:	  {std:.4f}s")
+		print(f"  - Min Time:	 {np.min(timings_np):.4f}s")
+		print(f"  - Max Time:	 {np.max(timings_np):.4f}s")
+		print(f"  - Total Time:   {np.sum(timings_np):.2f}s (across {len(timings)} steps)")
+		print(f"  - Percentage:   {percent_total:.2f}% of total benchmark time")
 
 	total_benchmark_duration = np.sum(total_times)
 	print_stats("Data Loading", data_times, total_benchmark_duration)
-	print_stats("Model Processing (Forward+Backward+Opt)", model_times, total_benchmark_duration)
+	print_stats("Model Processing (fwd+bwd)", model_times, total_benchmark_duration)
 
+	# Memory Reporting 
 	if device.type == "cuda":
 		max_allocated, max_reserved = get_gpu_memory_usage(device)
-		print("\nMemory Usage (Peak):")
-		print(f"  - Max Allocated: {max_allocated:.2f} GB")
-		print(f"  - Max Reserved:  {max_reserved:.2f} GB")
+		print("\nMemory Usage (Peak during Benchmark):")
+		print(f"  - Max Allocated: {max_allocated:.2f} GB (Tensor data)")
+		print(f"  - Max Reserved:  {max_reserved:.2f} GB (PyTorch Cache)")
+		print(f"  - Device Name:   {torch.cuda.get_device_name(device)}")
 
-	print(f"\nThroughput: {1 / np.mean(total_times):.2f} batch/s")
-	print("Benchmark complete.")
+	print("\n--- Overall ---")
+	print(f"Total benchmark time for {num_steps} steps: {total_benchmark_duration:.2f}s")
+	print(f"Average total time per step: {np.mean(total_times):.4f}s")
+	print(f"Batches per second (throughput): {1 / np.mean(total_times):.2f} batch/s")
+	print("\nBenchmark complete.")
 
 if __name__ == "__main__":
 	main()
