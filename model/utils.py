@@ -61,6 +61,6 @@ def apply_rope(
 	freqs_cos = freqs_cos.unsqueeze(0)
 	freqs_sin = freqs_sin.unsqueeze(0)
 
-	q_out, k_out = liger_rotary_pos_emb(q=q.float(), k=k.float(), cos=freqs_cos.to(q.dtype), sin=freqs_sin.to(q.dtype))
+	q_out, k_out = liger_rotary_pos_emb(q=q, k=k, cos=freqs_cos.to(q.dtype), sin=freqs_sin.to(q.dtype))
 
 	return q_out.type_as(q), k_out.type_as(k)
