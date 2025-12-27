@@ -9,11 +9,11 @@ use_submersion: false
 submersion_pooling_method: "mean"
 immersion_activation: "silu"
 use_kv_cache: false
-use_gate: true
+use_gate: false
 use_qk_norm: true
-ffn_multiplier: 2.6666666666666665
+ffn_multiplier: 2.671875  # Ensures FFN intermediate size (1368) is divisible by 8 for V100 tensor cores.
 rope_theta: 10000.0
 layer_scale_init: 0.0001
-electra_task: true
+electra_task: false
 encoder_attention_type: "mha"
 max_relative_positions: 512
