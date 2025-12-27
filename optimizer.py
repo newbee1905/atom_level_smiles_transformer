@@ -29,7 +29,7 @@ def zeropower_via_newtonschulz5(G: Tensor, steps: int) -> Tensor:
 	return X
 
 
-@torch.compile
+@torch.compile(dynamic=True)
 def adamw_update_kernel(
 	p: Tensor,
 	grad: Tensor,
