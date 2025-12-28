@@ -29,7 +29,6 @@ def zeropower_via_newtonschulz5(G: Tensor, steps: int) -> Tensor:
 	return X
 
 
-@torch.compile(dynamic=True)
 def adamw_update_kernel(
 	p: Tensor,
 	grad: Tensor,
@@ -99,6 +98,7 @@ class Muon(torch.optim.Optimizer):
 
 		super().__init__(param_groups, {})
 
+	@torch.compile
 	@torch.no_grad()
 	def step(self, closure=None):
 		loss = None
@@ -156,11 +156,6 @@ class Muon(torch.optim.Optimizer):
 class DistMuon(torch.optim.Optimizer):
 	"""
 	Distributed Muon with integrated Dense AdamW.
-
-	Fixes from original reference:
-	1. Respects per-parameter-group Learning Rates and Weight Decays.
-	   (Original collapsed all Muon params to the settings of the first group).
-	2. Optimized AdamW kernel for non-Muon parameters.
 	"""
 
 	def __init__(
@@ -238,116 +233,125 @@ class DistMuon(torch.optim.Optimizer):
 		final_groups = adamw_groups + muon_shape_groups
 		super().__init__(final_groups, defaults)
 
+	@torch.compile
 	@torch.no_grad()
 	def step(self, closure=None):
+		if not dist.is_initialized():
+			raise RuntimeError("DistMuon requires torch.distributed")
 		rank = dist.get_rank()
 		world_size = dist.get_world_size()
 
-		# Update AdamW params (Standard Local Update)
+		muon_futures, adamw_futures = [], []
+		muon_ctx, adamw_ctx = [], []
+
+		# Reductions
 		for group in self.param_groups:
-			if group.get("use_muon", False):
-				continue
+			if group.get("use_muon"):
+				params, zero_buf = group["params"], group["zero_buffer"]
+				for base_i in range(0, len(params), world_size):
+					chunk = params[base_i : base_i + world_size]
+					rs_input = [p.grad if p.grad is not None else zero_buf for p in chunk]
+					rs_input.extend([zero_buf] * (world_size - len(rs_input)))
+					owner_idx = base_i + rank
+					rs_output = (
+						params[owner_idx].grad
+						if owner_idx < len(params) and params[owner_idx].grad is not None
+						else torch.empty_like(zero_buf)
+					)
+					work = dist.reduce_scatter(rs_output, rs_input, op=dist.ReduceOp.AVG, async_op=True).get_future()
+					muon_futures.append(work)
+					muon_ctx.append((group, base_i, rs_output))
+			else:
+				for p in group["params"]:
+					if p.grad is None:
+						continue
 
-			for p in group["params"]:
-				if p.grad is None:
-					continue
+					grad_flat = p.grad.view(-1)
+					padding = (world_size - (grad_flat.numel() % world_size)) % world_size
+					if padding > 0:
+						grad_flat = torch.cat([grad_flat, torch.zeros(padding, device=p.device, dtype=p.dtype)])
+
+					shard_size = grad_flat.numel() // world_size
+					grad_shard = torch.empty(shard_size, device=p.device, dtype=p.dtype)
+					work = dist.reduce_scatter_tensor(
+						grad_shard, grad_flat, op=dist.ReduceOp.AVG, async_op=True
+					).get_future()
+
+					adamw_futures.append(work)
+					adamw_ctx.append((group, p, grad_shard, padding, shard_size))
+
+		# Process AdamW
+		adamw_gather_futures = []
+		for i, work in enumerate(adamw_futures):
+			work.wait()
+			group, p, g_shard, padding, shard_size = adamw_ctx[i]
+			state = self.state[p]
+			if len(state) == 0:
+				state["step"] = 0
+				state["exp_avg"] = torch.zeros_like(g_shard)
+				state["exp_avg_sq"] = torch.zeros_like(g_shard)
+			state["step"] += 1
+
+			# Param shard needed for WD and update
+			p_flat = p.data.view(-1)
+			if padding > 0:
+				p_flat = torch.cat([p_flat, torch.zeros(padding, device=p.device, dtype=p.dtype)])
+
+			p_shard = p_flat[rank * shard_size : (rank + 1) * shard_size]
+
+			adamw_update_kernel(
+				p_shard,
+				g_shard,
+				state["exp_avg"],
+				state["exp_avg_sq"],
+				group["lr"],
+				group["weight_decay"],
+				group["adam_betas"][0],
+				group["adam_betas"][1],
+				group["adam_eps"],
+				state["step"],
+			)
+
+			# Gather back
+			gathered_p = torch.empty_like(p_flat)
+			work = dist.all_gather_into_tensor(gathered_p, p_shard, async_op=True).get_future()
+			adamw_gather_futures.append((work, p, gathered_p, padding))
+
+		# Process Muon
+		muon_gather_futures = []
+		for i, work in enumerate(muon_futures):
+			work.wait()
+			group, base_i, g_avg = muon_ctx[i]
+			params = group["params"]
+			owner_idx = base_i + rank
+			if owner_idx < len(params):
+				p = params[owner_idx]
 				state = self.state[p]
+				if "momentum_buffer" not in state:
+					state["momentum_buffer"] = torch.zeros_like(p)
 
-				if not state:
-					state["step"] = 0
-					state["exp_avg"] = torch.zeros_like(p)
-					state["exp_avg_sq"] = torch.zeros_like(p)
+				buf = state["momentum_buffer"]
+				buf.lerp_(g_avg, 1.0 - group["momentum"])
+				g = g_avg.lerp_(buf, group["momentum"]) if group["nesterov"] else buf
+				g = zeropower_via_newtonschulz5(g, steps=group["ns_steps"])
 
-				state["step"] += 1
+				if group["weight_decay"] > 0:
+					p.mul_(1 - group["lr"] * group["weight_decay"])
 
-				adamw_update_kernel(
-					p,
-					p.grad,
-					state["exp_avg"],
-					state["exp_avg_sq"],
-					group["lr"],
-					group["weight_decay"],
-					group["betas"][0],
-					group["betas"][1],
-					group["eps"],
-					state["step"],
-				)
+				p.add_(g, alpha=-group["lr"] * max(1, p.size(-2) / p.size(-1)) ** 0.5)
+				ag_input = p
+			else:
+				ag_input = group["zero_buffer"]
 
-		# Update Muon params
-		muon_groups = [g for g in self.param_groups if g.get("use_muon", False)]
-		if not muon_groups:
-			return None
+			ag_out = params[base_i : base_i + world_size]
+			ag_out.extend([torch.empty_like(group["zero_buffer"]) for _ in range(world_size - len(ag_out))])
+			work = dist.all_gather(ag_out, ag_input, async_op=True).get_future()
+			muon_gather_futures.append(work)
 
-		reduce_futures = []
-		for group in muon_groups:
-			params = group["params"]
-			zero_buffer = group["zero_buffer"]
+		for work, p, gathered_p, padding in adamw_gather_futures:
+			work.wait()
+			if padding > 0:
+				gathered_p = gathered_p[:-padding]
+			p.data.copy_(gathered_p.view_as(p))
 
-			# Split into chunks for each rank
-			for base_i in range(0, len(params), world_size):
-				param_slice = params[base_i : base_i + world_size]
-				rs_input = [p.grad if p.grad is not None else zero_buffer for p in param_slice]
-				rs_input.extend([zero_buffer] * (world_size - len(rs_input)))
-
-				owner_idx = base_i + rank
-				rs_output = (
-					params[owner_idx].grad
-					if owner_idx < len(params) and params[owner_idx].grad is not None
-					else torch.empty_like(zero_buffer)
-				)
-
-				work = dist.reduce_scatter(rs_output, rs_input, op=dist.ReduceOp.AVG, async_op=True).get_future()
-				reduce_futures.append(work)
-
-		# Compute updates on the scattered shards and kick off all-gathers
-		future_idx = 0
-		gather_futures = []
-
-		for group in muon_groups:
-			params = group["params"]
-			settings = group["per_param_settings"]  # Retrieved the stored settings
-			zero_buffer = group["zero_buffer"]
-
-			for base_i in range(0, len(params), world_size):
-				reduce_futures[future_idx].wait()
-				future_idx += 1
-
-				owner_idx = base_i + rank
-				if owner_idx < len(params):
-					p = params[owner_idx]
-					g = p.grad  # This is now the averaged gradient from reduce_scatter
-
-					# Retrieve specific settings (LR, WD, etc.) for this specific parameter
-					p_conf = settings[owner_idx]
-
-					if g is not None:
-						state = self.state[p]
-						if "momentum_buffer" not in state:
-							state["momentum_buffer"] = torch.zeros_like(g)
-
-						buf = state["momentum_buffer"]
-						buf.lerp_(g, 1.0 - p_conf["momentum"])
-						g = g.lerp_(buf, p_conf["momentum"]) if p_conf["nesterov"] else buf
-
-						original_shape = p.shape
-						if p.ndim > 2:
-							g = g.view(g.size(0), -1)
-
-						g = zeropower_via_newtonschulz5(g, steps=p_conf["ns_steps"])
-
-						if p_conf["weight_decay"] > 0:
-							p.mul_(1 - p_conf["lr"] * p_conf["weight_decay"])
-
-						scale = max(1.0, g.size(-2) / g.size(-1)) ** 0.5
-						p.add_(g.view(original_shape), alpha=-p_conf["lr"] * scale)
-
-				# All-gather the updated parameters back to all ranks
-				ag_input = params[owner_idx] if owner_idx < len(params) else zero_buffer
-				ag_output = params[base_i : base_i + world_size]
-				ag_output.extend([torch.empty_like(zero_buffer) for _ in range(world_size - len(ag_output))])
-
-				work = dist.all_gather(ag_output, ag_input, async_op=True).get_future()
-				gather_futures.append(work)
-
-		torch.futures.collect_all(gather_futures).wait()
-		return None
+		torch.futures.collect_all(muon_gather_futures).wait()
