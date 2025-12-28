@@ -5,12 +5,11 @@ from torch.amp import autocast, GradScaler
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 import numpy as np
+import itertools
 
-# Adjust these imports to match your project structure
 from model.bart import Bart
 from chemformer_rs.tokenizer import SMILESTokenizer
 from dataset.zinc import ZincDataset
-
 
 def count_parameters(model):
 	"""Counts the number of trainable parameters in a model."""
@@ -29,28 +28,17 @@ def get_gpu_memory_usage(device):
 	return 0.0, 0.0
 
 
-@hydra.main(config_path="../config", config_name="train_config", version_base="1.3")
-def main(cfg: DictConfig):
+def run_benchmark(cfg: DictConfig):
 	"""
 	Main benchmarking function with AMP (Automatic Mixed Precision) support.
 	"""
-	print("--- Training Benchmark Script (AMP Enabled) ---")
-
 	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 	if device.type == "cuda":
-		# Enable CuDNN benchmark for consistent input sizes (helps V100)
 		torch.backends.cudnn.benchmark = True
-		print(f"GPU: {torch.cuda.get_device_name(0)}")
 
-	# Determine Data Type & AMP Settings
 	dtype = getattr(torch, cfg.training.get("dtype", "float16"))
 	use_amp = (dtype == torch.float16) and ("cuda" in device.type)
 
-	print(f"AMP Mode: {'Enabled' if use_amp else 'Disabled'}")
-	print(f"Target Dtype: {dtype}")
-
-	# 3. Setup Dataset
-	print("\nSetting up tokenizer and dataset...")
 	tokenizer = SMILESTokenizer.from_vocab(hydra.utils.to_absolute_path(cfg.model.vocab_path))
 	lmdb_path = hydra.utils.to_absolute_path(cfg.dataset.lmdb_path)
 	train_indices = ZincDataset.read_split_indices(lmdb_path, "train")
@@ -76,17 +64,14 @@ def main(cfg: DictConfig):
 		pin_memory=True,
 	)
 
-	# 4. Setup Model
 	OmegaConf.set_struct(cfg, False)
 	cfg.model.vocab_size = tokenizer.vocab_size
 	cfg.model.pad_token_id = tokenizer.token_to_index("<PAD>")
 	OmegaConf.set_struct(cfg, True)
 
 	model = Bart(cfg.model).to(device)
-	print(f"Total trainable parameters: {count_parameters(model)}")
 
 	if cfg.training.get("compile", False):
-		print("Compiling the model...")
 		model = torch.compile(model)
 
 	criterion = torch.nn.CrossEntropyLoss(ignore_index=cfg.model.pad_token_id)
@@ -94,44 +79,31 @@ def main(cfg: DictConfig):
 		electra_criterion = torch.nn.BCEWithLogitsLoss()
 
 	optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.training.optimizer.lr)
-
-	# Required for float16 to prevent underflow. Not typically needed for bfloat16.
 	scaler = GradScaler(enabled=(use_amp))
 
-	# Benchmark Variables
-	num_steps = cfg.get("bench_steps", 100)
-	warmup_steps = cfg.get("warmup_steps", 10)
-	data_times, model_times, total_times = [], [], []
+	num_steps = cfg.get("bench_steps", 200)
+	warmup_steps = cfg.get("warmup_steps", 20)
+	total_times = []
 
-	print(f"\nStarting benchmark: {warmup_steps} warmup + {num_steps} steps.")
 	data_iterator = iter(train_dl)
 	model.train()
 
 	for i in range(warmup_steps + num_steps):
-		# Reset memory stats right before actual benchmark
 		if i == warmup_steps and device.type == "cuda":
 			torch.cuda.reset_peak_memory_stats(device)
 
 		t_total_start = time.time()
-
-		# Data Loading
-		t_data_start = time.time()
 		try:
 			batch = next(data_iterator)
 		except StopIteration:
 			data_iterator = iter(train_dl)
 			batch = next(data_iterator)
-		t_data_end = time.time()
 
-		# Model Execution
-		t_model_start = time.time()
 		batch = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
 
 		with autocast(device_type=device.type, dtype=dtype, enabled=use_amp):
 			gen_logits, _, disc_logits, _, _ = model(batch["src"], batch["tgt"])
-
 			loss = criterion(gen_logits.view(-1, gen_logits.size(-1)), batch["tgt"].view(-1))
-
 			if cfg.model.get("electra_task", False) and disc_logits is not None:
 				electra_loss = electra_criterion(disc_logits, batch["electra_labels"])
 				loss += electra_loss * cfg.training.electra_loss_weight
@@ -143,63 +115,99 @@ def main(cfg: DictConfig):
 			scaler.step(optimizer)
 			scaler.update()
 		else:
-			# Standard backward for FP32 or BF16
 			loss.backward()
 			optimizer.step()
 
 		if device.type == "cuda":
 			torch.cuda.synchronize()
-		t_model_end = time.time()
-
 		t_total_end = time.time()
 
-		# Store timings (skip warmup)
 		if i >= warmup_steps:
-			data_times.append(t_data_end - t_data_start)
-			model_times.append(t_model_end - t_model_start)
 			total_times.append(t_total_end - t_total_start)
 
-		if (i + 1) % 10 == 0:
-			print(f"  Step {i + 1} completed...")
+	throughput = 1 / np.mean(total_times)
+	max_allocated, max_reserved = get_gpu_memory_usage(device)
 
-	# Reporting
-	print(f"\nThroughput: {1 / np.mean(total_times):.2f} batch/s")
-	print("Benchmark complete.")
+	return throughput, max_allocated, max_reserved
 
-	print("\n--- Benchmark Results ---")
 
-	def print_stats(name, timings, total_duration):
-		timings_np = np.array(timings)
-		avg = np.mean(timings_np)
-		std = np.std(timings_np)
-		percent_total = (np.sum(timings_np) / total_duration) * 100 if total_duration > 0 else 0
-
-		print(f"\n{name}:")
-		print(f"  - Average Time: {avg:.4f}s per batch")
-		print(f"  - Std Dev:	  {std:.4f}s")
-		print(f"  - Min Time:	 {np.min(timings_np):.4f}s")
-		print(f"  - Max Time:	 {np.max(timings_np):.4f}s")
-		print(f"  - Total Time:   {np.sum(timings_np):.2f}s (across {len(timings)} steps)")
-		print(f"  - Percentage:   {percent_total:.2f}% of total benchmark time")
-
-	total_benchmark_duration = np.sum(total_times)
-	print_stats("Data Loading", data_times, total_benchmark_duration)
-	print_stats("Model Processing (fwd+bwd)", model_times, total_benchmark_duration)
-
-	# Memory Reporting
+@hydra.main(config_path="../config", config_name="train_config", version_base="1.3")
+def main(cfg: DictConfig):
+	"""
+	Main benchmarking function to compare Liger vs. Torch implementations.
+	"""
+	print("--- Liger vs. Torch Benchmark Script ---")
+	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 	if device.type == "cuda":
-		max_allocated, max_reserved = get_gpu_memory_usage(device)
-		print("\nMemory Usage (Peak during Benchmark):")
-		print(f"  - Max Allocated: {max_allocated:.2f} GB (Tensor data)")
-		print(f"  - Max Reserved:  {max_reserved:.2f} GB (PyTorch Cache)")
-		print(f"  - Device Name:   {torch.cuda.get_device_name(device)}")
+		print(f"GPU: {torch.cuda.get_device_name(0)}")
 
-	print("\n--- Overall ---")
-	print(f"Total benchmark time for {num_steps} steps: {total_benchmark_duration:.2f}s")
-	print(f"Average total time per step: {np.mean(total_times):.4f}s")
-	print(f"Batches per second (throughput): {1 / np.mean(total_times):.2f} batch/s")
+	liger_flags = ["use_liger_ff", "use_liger_norm", "use_liger_rope"]
+	flag_combinations = list(itertools.product([True, False], repeat=len(liger_flags)))
+
+	results = []
+
+	for combo in flag_combinations:
+		temp_cfg = cfg.copy()
+		combo_dict = dict(zip(liger_flags, combo))
+
+		# Create a readable name for the combination
+		combo_name = []
+		for flag, value in combo_dict.items():
+			name = flag.split("_")[-1].upper()
+			prefix = "L" if value else "T"
+			combo_name.append(f"{prefix}-{name}")
+		combo_name = " | ".join(combo_name)
+
+		print(f"\n--- Benchmarking: {combo_name} ---")
+
+		OmegaConf.set_struct(temp_cfg, False)
+		for flag, value in combo_dict.items():
+			temp_cfg.model[flag] = value
+		OmegaConf.set_struct(temp_cfg, True)
+
+		try:
+			throughput, mem_alloc, mem_reserved = run_benchmark(temp_cfg)
+			results.append(
+				{
+					"name": combo_name,
+					"throughput": throughput,
+					"mem_alloc": mem_alloc,
+					"mem_reserved": mem_reserved,
+					"error": None,
+				}
+			)
+		except Exception as e:
+			print(f"!!!-Error benchmarking {combo_name}: {e}")
+			results.append(
+				{
+					"name": combo_name,
+					"throughput": 0,
+					"mem_alloc": 0,
+					"mem_reserved": 0,
+					"error": str(e),
+				}
+			)
+
+	print("\n\n--- Benchmark Results Summary ---")
+
+	# Header
+	header = f"{'Combination':<30} | {'Throughput (batch/s)':<25} | {'Peak Memory (GB)':<20}"
+	print(header)
+	print("-" * len(header))
+
+	results.sort(key=lambda x: x["throughput"], reverse=True)
+
+	for res in results:
+		if res["error"]:
+			throughput_str = f"ERROR: {res['error'][:30]}..."
+			mem_str = "N/A"
+		else:
+			throughput_str = f"{res['throughput']:.2f}"
+			mem_str = f"{res['mem_alloc']:.2f}"
+		row = f"{res['name']:<30} | {throughput_str:<25} | {mem_str:<20}"
+		print(row)
+
 	print("\nBenchmark complete.")
-
 
 if __name__ == "__main__":
 	main()

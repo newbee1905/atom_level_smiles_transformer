@@ -1,7 +1,6 @@
 import torch.nn as nn
 
 from .block import DecoderBlock
-from liger_kernel.transformers.rms_norm import LigerRMSNormForGemma as RMSNorm
 
 
 class Decoder(nn.Module):
@@ -11,6 +10,10 @@ class Decoder(nn.Module):
 		super().__init__()
 		self.config = config
 		self.layers = nn.ModuleList([DecoderBlock(config) for _ in range(config.n_decoder_layer)])
+		if config.use_liger_norm:
+			from liger_kernel.transformers.rms_norm import LigerRMSNormForGemma as RMSNorm
+		else:
+			from model.norm import RMSNormTorch as RMSNorm
 		self.norm = RMSNorm(config.d_model)
 
 	def forward(self, x, encoder_hidden_states, freqs_cos, freqs_sin, layer_pasts=None):

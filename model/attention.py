@@ -2,9 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from liger_kernel.transformers.rms_norm import LigerRMSNormForGemma as RMSNorm
-
-from .utils import apply_rope
+from .utils import apply_rope, apply_rope_torch
 
 
 class MHA(nn.Module):
@@ -28,6 +26,8 @@ class MHA(nn.Module):
 		self.use_qk_norm = config.use_qk_norm
 		self.use_gate = config.use_gate
 		self.is_decoder = is_decoder
+		self.use_liger_rope = config.use_liger_rope
+		self.use_liger_norm = config.use_liger_norm
 
 		# Key, query, value projections
 		self.q_proj = nn.Linear(config.d_model, config.d_model, bias=False)
@@ -40,6 +40,10 @@ class MHA(nn.Module):
 			self.g_gate = nn.Linear(config.d_model, config.d_model, bias=False)
 
 		if self.use_qk_norm:
+			if self.use_liger_norm:
+				from liger_kernel.transformers.rms_norm import LigerRMSNormForGemma as RMSNorm
+			else:
+				from model.norm import RMSNormTorch as RMSNorm
 			self.q_norm = RMSNorm(self.d_head)
 			self.k_norm = RMSNorm(self.d_head)
 
@@ -77,7 +81,10 @@ class MHA(nn.Module):
 		# Apply RoPE for self-attention
 		if not is_cross_attention:
 			total_seq_len = seq_len + seq_len_past
-			q, k = apply_rope(q, k, freqs_cos, freqs_sin, seq_len=total_seq_len)
+			if self.use_liger_rope:
+				q, k = apply_rope(q, k, freqs_cos, freqs_sin, seq_len=total_seq_len)
+			else:
+				q, k = apply_rope_torch(q, k, freqs_cos, freqs_sin, seq_len=total_seq_len)
 
 		if self.use_qk_norm:
 			q = self.q_norm(q)
@@ -120,6 +127,7 @@ class DisentangledSelfAttention(nn.Module):
 		self.n_head = config.n_head
 		self.d_head = config.d_model // self.n_head
 		self.use_qk_norm = getattr(config, "use_qk_norm", False)
+		self.use_liger_norm = config.use_liger_norm
 
 		self.q_proj = nn.Linear(config.d_model, config.d_model, bias=True)
 		self.k_proj = nn.Linear(config.d_model, config.d_model, bias=True)
@@ -128,6 +136,10 @@ class DisentangledSelfAttention(nn.Module):
 		self.resid_dropout = nn.Dropout(config.dropout)
 
 		if self.use_qk_norm:
+			if self.use_liger_norm:
+				from liger_kernel.transformers.rms_norm import LigerRMSNormForGemma as RMSNorm
+			else:
+				from model.norm import RMSNormTorch as RMSNorm
 			self.q_norm = RMSNorm(self.d_head)
 			self.k_norm = RMSNorm(self.d_head)
 

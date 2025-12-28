@@ -1,7 +1,6 @@
 import torch.nn as nn
 
 from .block import EncoderBlock
-from liger_kernel.transformers.rms_norm import LigerRMSNormForGemma as RMSNorm
 from liger_kernel.ops.swiglu import LigerSiLUMulFunction
 
 
@@ -28,6 +27,10 @@ class Encoder(nn.Module):
 		super().__init__()
 		self.config = config
 		self.layers = nn.ModuleList([EncoderBlock(config) for _ in range(config.n_encoder_layer)])
+		if config.use_liger_norm:
+			from liger_kernel.transformers.rms_norm import LigerRMSNormForGemma as RMSNorm
+		else:
+			from model.norm import RMSNormTorch as RMSNorm
 		self.norm = RMSNorm(config.d_model)
 		self.electra_task = getattr(config, "electra_task", False)
 

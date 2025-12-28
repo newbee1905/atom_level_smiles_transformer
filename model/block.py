@@ -3,7 +3,6 @@ import torch.nn as nn
 
 from .attention import MHA, DisentangledSelfAttention
 from .feed_forward import FeedForward
-from liger_kernel.transformers.rms_norm import LigerRMSNormForGemma as RMSNorm
 
 
 class EncoderBlock(nn.Module):
@@ -11,8 +10,14 @@ class EncoderBlock(nn.Module):
 
 	def __init__(self, config):
 		super().__init__()
-		self.attn_norm = RMSNorm(config.d_model)
 		self.attention_type = getattr(config, "encoder_attention_type", "mha")
+
+		if config.use_liger_norm:
+			from liger_kernel.transformers.rms_norm import LigerRMSNormForGemma as RMSNorm
+		else:
+			from model.norm import RMSNormTorch as RMSNorm
+
+		self.attn_norm = RMSNorm(config.d_model)
 		if self.attention_type == "disentangled":
 			self.attn = DisentangledSelfAttention(config)
 		else:
@@ -21,7 +26,12 @@ class EncoderBlock(nn.Module):
 		self.attn_layerscale = nn.Parameter(config.layer_scale_init * torch.ones(config.d_model))
 
 		self.ffn_norm = RMSNorm(config.d_model)
-		self.ffn = FeedForward(config)
+		if config.use_liger_ff:
+			self.ffn = FeedForward(config)
+		else:
+			from .feed_forward import FeedForwardTorch
+
+			self.ffn = FeedForwardTorch(config)
 		self.ffn_dropout = nn.Dropout(config.dropout)
 		self.ffn_layerscale = nn.Parameter(config.layer_scale_init * torch.ones(config.d_model))
 
@@ -45,6 +55,11 @@ class DecoderBlock(nn.Module):
 
 	def __init__(self, config):
 		super().__init__()
+		if config.use_liger_norm:
+			from liger_kernel.transformers.rms_norm import LigerRMSNormForGemma as RMSNorm
+		else:
+			from model.norm import RMSNormTorch as RMSNorm
+
 		self.self_attn_norm = RMSNorm(config.d_model)
 		self.self_attn = MHA(config, is_decoder=True)
 		self.self_attn_dropout = nn.Dropout(config.dropout)
@@ -56,7 +71,12 @@ class DecoderBlock(nn.Module):
 		self.cross_attn_layerscale = nn.Parameter(config.layer_scale_init * torch.ones(config.d_model))
 
 		self.ffn_norm = RMSNorm(config.d_model)
-		self.ffn = FeedForward(config)
+		if config.use_liger_ff:
+			self.ffn = FeedForward(config)
+		else:
+			from .feed_forward import FeedForwardTorch
+
+			self.ffn = FeedForwardTorch(config)
 		self.ffn_dropout = nn.Dropout(config.dropout)
 		self.ffn_layerscale = nn.Parameter(config.layer_scale_init * torch.ones(config.d_model))
 
