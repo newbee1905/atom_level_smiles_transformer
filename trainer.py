@@ -227,24 +227,29 @@ class Trainer:
 		running_gen_loss = 0.0
 		running_disc_loss = 0.0
 		running_submersion_loss = 0.0
+		running_correct_tokens = 0
+		running_total_tokens = 0
+		pad_id = self.cfg.model.pad_token_id
 
 		for batch_idx, batch in enumerate(self.train_loader):
 			batch = {k: v.to(self.device, non_blocking=True) for k, v in batch.items()}
 
 			with autocast(device_type=self.device.type, dtype=self.dtype, enabled=self.use_amp):
+				decoder_input = batch["tgt"][:, :-1].contiguous()
+				labels = batch["tgt"][:, 1:].contiguous()
 				(
 					gen_logits,
 					_,
 					disc_logits,
 					original_hidden,
 					reconstructed_hidden,
-				) = self.model(batch["src"], batch["tgt"])
+				) = self.model(batch["src"], decoder_input)
 
 				# Apply soft-capping to generator logits
 				if self.use_softcap:
 					gen_logits = self.softcap_value * torch.tanh(gen_logits / self.softcap_value)
 
-				gen_loss = self.criterion(gen_logits.view(-1, gen_logits.size(-1)), batch["tgt"].view(-1))
+				gen_loss = self.criterion(gen_logits.view(-1, gen_logits.size(-1)), labels.view(-1))
 				loss = gen_loss
 
 				if self.electra_task and disc_logits is not None:
@@ -262,6 +267,12 @@ class Trainer:
 				loss = loss / self.grad_accum_steps
 
 			self.scaler.scale(loss).backward()
+
+			with torch.no_grad():
+				preds = torch.argmax(gen_logits, dim=-1)
+				mask = labels != pad_id
+				running_correct_tokens += torch.sum(preds[mask] == labels[mask]).item()
+				running_total_tokens += torch.sum(mask).item()
 
 			if (batch_idx + 1) % self.grad_accum_steps == 0 or (batch_idx + 1) == len(self.train_loader):
 				if self.grad_clip is not None:
@@ -293,18 +304,23 @@ class Trainer:
 		epoch_gen_loss = torch.tensor(running_gen_loss / len(self.train_loader), device=self.device)
 		epoch_disc_loss = torch.tensor(running_disc_loss / len(self.train_loader), device=self.device)
 		epoch_submersion_loss = torch.tensor(running_submersion_loss / len(self.train_loader), device=self.device)
+		epoch_token_accuracy = torch.tensor(
+			(running_correct_tokens / running_total_tokens) if running_total_tokens > 0 else 0.0, device=self.device
+		)
 
 		if self.is_ddp:
 			dist.all_reduce(epoch_loss, op=dist.ReduceOp.AVG)
 			dist.all_reduce(epoch_gen_loss, op=dist.ReduceOp.AVG)
 			dist.all_reduce(epoch_disc_loss, op=dist.ReduceOp.AVG)
 			dist.all_reduce(epoch_submersion_loss, op=dist.ReduceOp.AVG)
+			dist.all_reduce(epoch_token_accuracy, op=dist.ReduceOp.AVG)
 
 		return (
 			epoch_loss.item(),
 			epoch_gen_loss.item(),
 			epoch_disc_loss.item(),
 			epoch_submersion_loss.item(),
+			epoch_token_accuracy.item(),
 		)
 
 	def _evaluate(self, dataloader):
@@ -324,17 +340,20 @@ class Trainer:
 			for batch in dataloader:
 				batch = {k: v.to(self.device, non_blocking=True) for k, v in batch.items()}
 				with autocast(device_type=self.device.type, dtype=self.dtype, enabled=self.use_amp):
+					decoder_input = batch["tgt"][:, :-1].contiguous()
+					labels = batch["tgt"][:, 1:].contiguous()
+
 					(
 						gen_logits,
 						_,
 						disc_logits,
 						original_hidden,
 						reconstructed_hidden,
-					) = self.model(batch["src"], batch["tgt"])
+					) = self.model(batch["src"], decoder_input)
 
 					if self.use_softcap:
 						gen_logits = self.softcap_value * torch.tanh(gen_logits / self.softcap_value)
-					gen_loss = self.criterion(gen_logits.view(-1, gen_logits.size(-1)), batch["tgt"].view(-1))
+					gen_loss = self.criterion(gen_logits.view(-1, gen_logits.size(-1)), labels.view(-1))
 					loss = gen_loss
 
 					if self.electra_task and disc_logits is not None:
@@ -349,21 +368,21 @@ class Trainer:
 					else:
 						submersion_loss = torch.tensor(0.0)
 
-			running_loss += loss.item()
-			running_gen_loss += gen_loss.item()
-			running_disc_loss += disc_loss.item()
-			running_submersion_loss += submersion_loss.item()
+				running_loss += loss.item()
+				running_gen_loss += gen_loss.item()
+				running_disc_loss += disc_loss.item()
+				running_submersion_loss += submersion_loss.item()
 
-			# Accuracy calculation
-			preds = torch.argmax(gen_logits, dim=-1)
-			mask = batch["tgt"] != pad_id
-			correct_tokens += torch.sum(preds[mask] == batch["tgt"][mask]).item()
-			total_tokens += torch.sum(mask).item()
+				# Accuracy calculation
+				preds = torch.argmax(gen_logits, dim=-1)
+				mask = labels != pad_id
+				correct_tokens += torch.sum(preds[mask] == labels[mask]).item()
+				total_tokens += torch.sum(mask).item()
 
-			# Exact match calculation
-			correct_in_sequence = (preds == batch["tgt"]) | ~mask
-			exact_matches += torch.all(correct_in_sequence, dim=1).sum().item()
-			total_sequences += batch["tgt"].size(0)
+				# Exact match calculation
+				correct_in_sequence = (preds == labels) | ~mask
+				exact_matches += torch.all(correct_in_sequence, dim=1).sum().item()
+				total_sequences += labels.size(0)
 
 		# Aggregate losses
 		epoch_loss = torch.tensor(running_loss / len(dataloader), device=self.device)
@@ -412,7 +431,7 @@ class Trainer:
 				if self.is_main_process:
 					metrics_dict["epoch"] = f"{self.current_epoch}/{self.epochs}"
 
-				train_loss, train_gen_loss, train_disc_loss, train_sub_loss = self._train_one_epoch(
+				train_loss, train_gen_loss, train_disc_loss, train_sub_loss, train_token_acc = self._train_one_epoch(
 					pbar, metrics_dict, epoch
 				)
 				(
@@ -426,6 +445,7 @@ class Trainer:
 
 				if self.is_main_process:
 					metrics_dict["train_loss"] = f"{train_loss:.4f}"
+					metrics_dict["train_token_acc"] = f"{train_token_acc:.4f}"
 					metrics_dict["val_loss"] = f"{val_loss:.4f}"
 					metrics_dict["val_token_acc"] = f"{val_token_acc:.4f}"
 					metrics_dict["val_exact_acc"] = f"{val_exact_acc:.4f}"
@@ -435,6 +455,7 @@ class Trainer:
 						"Loss/val": val_loss,
 						"Loss/train_generator": train_gen_loss,
 						"Loss/val_generator": val_gen_loss,
+						"Accuracy/token_train": train_token_acc,
 						"Accuracy/token_val": val_token_acc,
 						"Accuracy/exact_val": val_exact_acc,
 						"lr": self.optimizer.param_groups[0]["lr"],
