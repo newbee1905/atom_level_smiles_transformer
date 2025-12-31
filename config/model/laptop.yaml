@@ -1,9 +1,9 @@
 name: chemformer-laptop
 block_size: 256
-n_encoder_layer: 2
-n_decoder_layer: 2
-n_head: 2
-d_model: 128
+n_encoder_layer: 4
+n_decoder_layer: 4
+n_head: 4
+d_model: 256
 dropout: 0.1
 use_submersion: false
 submersion_pooling_method: "mean"
@@ -11,7 +11,7 @@ immersion_activation: "silu"
 use_kv_cache: false
 use_gate: false
 use_qk_norm: true
-ffn_multiplier: 2.6875  # Ensures FFN intermediate size (344) is divisible by 8 for V100 tensor cores.
+ffn_multiplier: 2.5 # Ensures FFN intermediate size (640) is divisible by 64.
 rope_theta: 10000.0
 layer_scale_init: 0.0001
 electra_task: false

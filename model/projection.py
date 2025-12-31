@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .norm import get_norm_class
+
 
 class Submersion(nn.Module):
 	"""
@@ -15,10 +17,8 @@ class Submersion(nn.Module):
 		self.config = config
 		self.w1 = nn.Linear(config.d_model, config.d_model)
 		self.w2 = nn.Linear(config.d_model, config.d_model)
-		if config.use_liger_norm:
-			from liger_kernel.transformers.rms_norm import LigerRMSNormForGemma as RMSNorm
-		else:
-			from model.norm import RMSNormTorch as RMSNorm
+
+		RMSNorm = get_norm_class(config)
 		self.norm = RMSNorm(config.d_model)
 
 		if self.config.submersion_pooling_method == "attention":
@@ -55,10 +55,8 @@ class Immersion(nn.Module):
 		self.config = config
 		self.w3 = nn.Linear(config.d_model, config.d_model)
 		self.w4 = nn.Linear(config.d_model, config.d_model)
-		if config.use_liger_norm:
-			from liger_kernel.transformers.rms_norm import LigerRMSNormForGemma as RMSNorm
-		else:
-			from model.norm import RMSNormTorch as RMSNorm
+
+		RMSNorm = get_norm_class(config)
 		self.norm = RMSNorm(config.d_model)
 
 		if self.config.immersion_activation == "gelu":

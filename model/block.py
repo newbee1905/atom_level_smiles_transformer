@@ -3,6 +3,7 @@ import torch.nn as nn
 
 from .attention import MHA, DisentangledSelfAttention
 from .feed_forward import FeedForward
+from .norm import get_norm_class
 
 
 class EncoderBlock(nn.Module):
@@ -12,10 +13,7 @@ class EncoderBlock(nn.Module):
 		super().__init__()
 		self.attention_type = getattr(config, "encoder_attention_type", "mha")
 
-		if config.use_liger_norm:
-			from liger_kernel.transformers.rms_norm import LigerRMSNormForGemma as RMSNorm
-		else:
-			from model.norm import RMSNormTorch as RMSNorm
+		RMSNorm = get_norm_class(config)
 
 		self.attn_norm = RMSNorm(config.d_model)
 		if self.attention_type == "disentangled":
@@ -55,10 +53,7 @@ class DecoderBlock(nn.Module):
 
 	def __init__(self, config):
 		super().__init__()
-		if config.use_liger_norm:
-			from liger_kernel.transformers.rms_norm import LigerRMSNormForGemma as RMSNorm
-		else:
-			from model.norm import RMSNormTorch as RMSNorm
+		RMSNorm = get_norm_class(config)
 
 		self.self_attn_norm = RMSNorm(config.d_model)
 		self.self_attn = MHA(config, is_decoder=True)

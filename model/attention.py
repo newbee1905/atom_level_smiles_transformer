@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .utils import apply_rope, apply_rope_torch
+from .norm import get_norm_class
 
 
 class MHA(nn.Module):
@@ -27,7 +28,6 @@ class MHA(nn.Module):
 		self.use_gate = config.use_gate
 		self.is_decoder = is_decoder
 		self.use_liger_rope = config.use_liger_rope
-		self.use_liger_norm = config.use_liger_norm
 
 		# Key, query, value projections
 		self.q_proj = nn.Linear(config.d_model, config.d_model, bias=False)
@@ -40,10 +40,7 @@ class MHA(nn.Module):
 			self.g_gate = nn.Linear(config.d_model, config.d_model, bias=False)
 
 		if self.use_qk_norm:
-			if self.use_liger_norm:
-				from liger_kernel.transformers.rms_norm import LigerRMSNormForGemma as RMSNorm
-			else:
-				from model.norm import RMSNormTorch as RMSNorm
+			RMSNorm = get_norm_class(config)
 			self.q_norm = RMSNorm(self.d_head)
 			self.k_norm = RMSNorm(self.d_head)
 
@@ -70,9 +67,9 @@ class MHA(nn.Module):
 			k = self.k_proj(hidden_states)
 			v = self.v_proj(hidden_states)
 
-		q = q.view(bsz, seq_len, self.n_head, self.d_head).transpose(1, 2)
-		k = k.view(bsz, -1, self.n_head, self.d_head).transpose(1, 2)
-		v = v.view(bsz, -1, self.n_head, self.d_head).transpose(1, 2)
+		q = q.reshape(bsz, seq_len, self.n_head, self.d_head).transpose(1, 2)
+		k = k.reshape(bsz, -1, self.n_head, self.d_head).transpose(1, 2)
+		v = v.reshape(bsz, -1, self.n_head, self.d_head).transpose(1, 2)
 
 		seq_len_past = 0
 		if self.use_kv_cache and layer_past is not None:
@@ -82,7 +79,7 @@ class MHA(nn.Module):
 		if not is_cross_attention:
 			total_seq_len = seq_len + seq_len_past
 			if self.use_liger_rope:
-				q, k = apply_rope(q, k, freqs_cos, freqs_sin, seq_len=total_seq_len)
+				q, k = apply_rope(q, k, freqs_cos, freqs_sin)
 			else:
 				q, k = apply_rope_torch(q, k, freqs_cos, freqs_sin, seq_len=total_seq_len)
 
@@ -127,7 +124,6 @@ class DisentangledSelfAttention(nn.Module):
 		self.n_head = config.n_head
 		self.d_head = config.d_model // self.n_head
 		self.use_qk_norm = getattr(config, "use_qk_norm", False)
-		self.use_liger_norm = config.use_liger_norm
 
 		self.q_proj = nn.Linear(config.d_model, config.d_model, bias=True)
 		self.k_proj = nn.Linear(config.d_model, config.d_model, bias=True)
@@ -136,10 +132,7 @@ class DisentangledSelfAttention(nn.Module):
 		self.resid_dropout = nn.Dropout(config.dropout)
 
 		if self.use_qk_norm:
-			if self.use_liger_norm:
-				from liger_kernel.transformers.rms_norm import LigerRMSNormForGemma as RMSNorm
-			else:
-				from model.norm import RMSNormTorch as RMSNorm
+			RMSNorm = get_norm_class(config)
 			self.q_norm = RMSNorm(self.d_head)
 			self.k_norm = RMSNorm(self.d_head)
 
@@ -171,9 +164,9 @@ class DisentangledSelfAttention(nn.Module):
 		k = self.k_proj(hidden_states)
 		v = self.v_proj(hidden_states)
 
-		q = q.view(bsz, seq_len, self.n_head, self.d_head).transpose(1, 2)
-		k = k.view(bsz, seq_len, self.n_head, self.d_head).transpose(1, 2)
-		v = v.view(bsz, seq_len, self.n_head, self.d_head).transpose(1, 2)
+		q = q.reshape(bsz, seq_len, self.n_head, self.d_head).transpose(1, 2)
+		k = k.reshape(bsz, seq_len, self.n_head, self.d_head).transpose(1, 2)
+		v = v.reshape(bsz, seq_len, self.n_head, self.d_head).transpose(1, 2)
 
 		if self.use_qk_norm:
 			q = self.q_norm(q)

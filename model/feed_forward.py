@@ -1,6 +1,6 @@
 import torch.nn as nn
 import torch.nn.functional as F
-from liger_kernel.ops.swiglu import LigerSiLUMulFunction
+from kernel.swiglu import TritonSwiGLUFunction
 
 
 class FeedForward(nn.Module):
@@ -21,7 +21,7 @@ class FeedForward(nn.Module):
 		self.dropout = nn.Dropout(config.dropout)
 
 	def forward(self, x):
-		output = self.down_proj(LigerSiLUMulFunction.apply(self.up_proj(x), self.gate_proj(x)))
+		output = self.down_proj(TritonSwiGLUFunction.apply(self.up_proj(x), self.gate_proj(x)))
 		output = self.dropout(output)
 
 		return output

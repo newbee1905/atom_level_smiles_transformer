@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 
-from liger_kernel.transformers.rope import liger_rotary_pos_emb
+from kernel.rope import TritonRoPEFunction
 
 
 class AttributeEncoder(nn.Module):
@@ -49,21 +49,34 @@ def apply_rope(
 	k: torch.Tensor,
 	freqs_cos: torch.Tensor,
 	freqs_sin: torch.Tensor,
-	seq_len: int,
-):
+) -> tuple[torch.Tensor, torch.Tensor]:
 	"""
-	Applies the Rotary Positional Embedding (RoPE) to the query and key tensors.
+	Applies RoPE to Q and K using the optimized Triton kernel.
+
+	Args:
+	    q: Query tensor of shape [B, S, H, D] or [B, H, S, D]
+	    k: Key tensor of shape [B, S, H, D] or [B, H, S, D]
+	    freqs_cos: Cosine frequencies of shape [MaxSeq, D]
+	    freqs_sin: Sine frequencies of shape [MaxSeq, D]
+
+	Returns:
+	    A tuple of (q, k) with RoPE applied, in the same shape as the input.
 	"""
-	T = q.size(2)
+	# Infer sequence length from the non-batch, non-head, non-dim dimension.
+	# We can use the freqs tensor's shape to disambiguate.
+	if freqs_cos.shape[0] >= q.shape[1] and q.shape[1] > 0:  # q.shape[1] is seq_len
+		seq_len = q.shape[1]
+	elif freqs_cos.shape[0] >= q.shape[2] and q.shape[2] > 0:  # q.shape[2] is seq_len
+		seq_len = q.shape[2]
+	else:  # Fallback for cases where seq_len might be shorter than precomputed freqs
+		seq_len = q.shape[1] if q.shape[1] < q.shape[2] else q.shape[2]
 
-	freqs_cos = freqs_cos[seq_len - T : seq_len].contiguous()
-	freqs_sin = freqs_sin[seq_len - T : seq_len].contiguous()
-	freqs_cos = freqs_cos.unsqueeze(0)
-	freqs_sin = freqs_sin.unsqueeze(0)
+	# Slice frequencies to the actual sequence length.
+	cos = freqs_cos[:seq_len]
+	sin = freqs_sin[:seq_len]
 
-	q_out, k_out = liger_rotary_pos_emb(q=q, k=k, cos=freqs_cos.to(q.dtype), sin=freqs_sin.to(q.dtype))
-
-	return q_out.type_as(q), k_out.type_as(k)
+	# The autograd function handles layout detection and kernel dispatch.
+	return TritonRoPEFunction.apply(q, k, cos, sin)
 
 
 def apply_rope_torch(
@@ -77,16 +90,15 @@ def apply_rope_torch(
 	Applies the Rotary Positional Embedding (RoPE) to the query and key tensors using pure torch.
 	"""
 	query_len, head_dim = q.shape[-2], q.shape[-1]
+
 	# Get the correct slice of freqs
 	freqs_cos = freqs_cos[seq_len - query_len : seq_len].to(q.device)
 	freqs_sin = freqs_sin[seq_len - query_len : seq_len].to(q.device)
 
-	# freqs_cos, freqs_sin are now [query_len, head_dim // 2]
-	# Reshape for broadcasting: [1, 1, query_len, head_dim // 2]
+	# [query_len, head_dim // 2] -> [1, 1, query_len, head_dim // 2]
 	freqs_cos = freqs_cos.unsqueeze(0).unsqueeze(0)
 	freqs_sin = freqs_sin.unsqueeze(0).unsqueeze(0)
 
-	# Reshape q and k to view the last dim as pairs of features
 	# (bs, num_heads, seq_len, head_dim) -> (bs, num_heads, seq_len, head_dim//2, 2)
 	q_reshaped = q.float().reshape(*q.shape[:-1], -1, 2)
 	k_reshaped = k.float().reshape(*k.shape[:-1], -1, 2)
