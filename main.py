@@ -10,6 +10,7 @@ from torch.utils.data.distributed import DistributedSampler
 from model.bart import Bart
 from chemformer_rs.tokenizer import SMILESTokenizer
 from dataset.zinc import ZincDataset
+from dataset.uspto_sep import UsptoSepDataset
 from trainer import Trainer
 
 
@@ -57,18 +58,32 @@ def main(cfg: DictConfig):
 
 	lmdb_path = hydra.utils.to_absolute_path(cfg.dataset.lmdb_path)
 
-	train_indices = ZincDataset.read_split_indices(lmdb_path, "train")
-	train_ds = ZincDataset(
+	# Dataset selection logic
+	if cfg.dataset.name == "zinc":
+		DatasetClass = ZincDataset
+		dataset_args = {
+			"mask_prob": cfg.dataset.mask_prob,
+			"span_len": cfg.dataset.span_len,
+			"augment_prob": cfg.dataset.augment_prob,
+			"span_mask_proportion": cfg.dataset.span_mask_proportion,
+			"span_random_proportion": cfg.dataset.span_random_proportion,
+		}
+	elif cfg.dataset.name == "uspto_sep":
+		DatasetClass = UsptoSepDataset
+		dataset_args = {
+			"augment_prob": cfg.dataset.augment_prob,
+		}
+	else:
+		raise ValueError(f"Unknown dataset: {cfg.dataset.name}")
+
+	train_indices = DatasetClass.read_split_indices(lmdb_path, "train")
+	train_ds = DatasetClass(
 		lmdb_path=lmdb_path,
 		subset_indices=train_indices,
 		tokenizer=tokenizer,
 		max_length=cfg.model.max_length,
 		is_training=True,
-		mask_prob=cfg.dataset.mask_prob,
-		span_len=cfg.dataset.span_len,
-		augment_prob=cfg.dataset.augment_prob,
-		span_mask_proportion=cfg.dataset.span_mask_proportion,
-		span_random_proportion=cfg.dataset.span_random_proportion,
+		**dataset_args,
 	)
 	train_sampler = DistributedSampler(train_ds, num_replicas=world_size, rank=rank, shuffle=True) if is_ddp else None
 	train_dl = DataLoader(
@@ -80,18 +95,14 @@ def main(cfg: DictConfig):
 		pin_memory=True,
 	)
 
-	val_indices = ZincDataset.read_split_indices(lmdb_path, "val")
-	val_ds = ZincDataset(
+	val_indices = DatasetClass.read_split_indices(lmdb_path, "val")
+	val_ds = DatasetClass(
 		lmdb_path=lmdb_path,
 		subset_indices=val_indices,
 		tokenizer=tokenizer,
 		max_length=cfg.model.max_length,
 		is_training=False,
-		mask_prob=cfg.dataset.mask_prob,
-		span_len=cfg.dataset.span_len,
-		augment_prob=cfg.dataset.augment_prob,
-		span_mask_proportion=cfg.dataset.span_mask_proportion,
-		span_random_proportion=cfg.dataset.span_random_proportion,
+		**dataset_args,
 	)
 	val_sampler = DistributedSampler(val_ds, num_replicas=world_size, rank=rank, shuffle=False) if is_ddp else None
 	val_dl = DataLoader(
@@ -109,6 +120,32 @@ def main(cfg: DictConfig):
 	OmegaConf.set_struct(cfg, True)
 
 	model = Bart(cfg.model).to(device)
+
+	# Load pre-trained model if path is provided
+	if cfg.task.get("pretrain_checkpoint"):
+		if rank == 0:
+			print(f"Loading pre-trained model from {cfg.task.pretrain_checkpoint}")
+		checkpoint_path = hydra.utils.to_absolute_path(cfg.task.pretrain_checkpoint)
+
+		if not os.path.exists(checkpoint_path):
+			raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
+
+		checkpoint = torch.load(checkpoint_path, map_location=device)
+
+		model_state_dict = checkpoint.get("model_state_dict", checkpoint)
+
+		if all(k.startswith("module.") for k in model_state_dict.keys()):
+			model_state_dict = {k[7:]: v for k, v in model_state_dict.items()}
+
+		missing_keys, unexpected_keys = model.load_state_dict(model_state_dict, strict=False)
+
+		if rank == 0:
+			print("Pre-trained model loaded.")
+			if missing_keys:
+				print(f"Missing keys in state_dict: {missing_keys}")
+			if unexpected_keys:
+				print(f"Unexpected keys in state_dict: {unexpected_keys}")
+
 	if rank == 0:
 		print(f"Total number of trainable parameters in the BART model: {count_parameters(model)}")
 

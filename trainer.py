@@ -252,7 +252,8 @@ class Trainer:
 				gen_loss = self.criterion(gen_logits.view(-1, gen_logits.size(-1)), labels.view(-1))
 				loss = gen_loss
 
-				if self.electra_task and disc_logits is not None:
+				disc_loss = torch.tensor(0.0)
+				if self.electra_task and disc_logits is not None and "electra_labels" in batch:
 					disc_loss = self.electra_criterion(disc_logits, batch["electra_labels"])
 					loss += disc_loss * self.electra_loss_weight
 				else:
@@ -356,7 +357,8 @@ class Trainer:
 					gen_loss = self.criterion(gen_logits.view(-1, gen_logits.size(-1)), labels.view(-1))
 					loss = gen_loss
 
-					if self.electra_task and disc_logits is not None:
+					disc_loss = torch.tensor(0.0)
+					if self.electra_task and disc_logits is not None and "electra_labels" in batch:
 						disc_loss = self.electra_criterion(disc_logits, batch["electra_labels"])
 						loss += disc_loss * self.electra_loss_weight
 					else:

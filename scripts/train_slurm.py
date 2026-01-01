@@ -11,7 +11,7 @@ SLURM_SCRIPT_TEMPLATE = """#!/bin/bash
 #SBATCH --gpus={gpu_type}:{num_gpus}
 #SBATCH --nodes={num_nodes}
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=18
+#SBATCH --cpus-per-task=10
 #SBATCH --time={time}
 #SBATCH --mem={mem}
 #SBATCH --output=logs/{job_name}_%j.out
@@ -31,7 +31,9 @@ module load Anaconda3/2024.02
 
 eval "$(conda shell.bash hook)"
 
+set +u
 conda activate rust_build_env
+set -u
 
 export LIBCLANG_PATH="$CONDA_PREFIX/lib"
 export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:$LD_LIBRARY_PATH"
@@ -46,9 +48,14 @@ unset CONDA_PREFIX
 echo "Activating virtual environment..."
 source .venv/bin/activate
 
-export PYTHONPATH=$PYTHONPATH:.
+if [ -z "${{PYTHONPATH:-}}" ]; then
+	export PYTHONPATH=.
+else
+	export PYTHONPATH="$PYTHONPATH:."
+fi
 
 # --- DDP Setup ---
+export OMP_NUM_THREADS=1
 export MASTER_ADDR=$(scontrol show hostname $SLURM_JOB_NODELIST | head -n 1)
 export MASTER_PORT=$(shuf -i 29500-65535 -n 1)
 GPUS_PER_NODE={num_gpus}
@@ -64,6 +71,11 @@ echo "Hydra args: {hydra_args_str}"
 echo "----------------"
 nvidia-smi
 
+pkill -u $(whoami) -f python || true
+sleep 2
+
+echo "Debug: MASTER_ADDR=$MASTER_ADDR MASTER_PORT=$MASTER_PORT"
+
 srun torchrun \
 	--nproc_per_node=$GPUS_PER_NODE \
 	--nnodes=$SLURM_NNODES \
@@ -75,32 +87,46 @@ srun torchrun \
 echo "SLURM job $SLURM_JOB_ID finished."
 """
 
+
 def main():
 	"""Parses arguments, generates a SLURM script, and submits it."""
 	parser = argparse.ArgumentParser(
 		description="Generate and submit a SLURM job for training Chemformer.",
 		formatter_class=argparse.RawTextHelpFormatter,
-		usage="python %(prog)s --model_config <config> [options] -- [hydra_options]"
+		usage="python %(prog)s --model_config <config> [options] -- [hydra_options]",
 	)
 
 	# SLURM arguments
-	slurm_group = parser.add_argument_group('SLURM Configuration')
-	slurm_group.add_argument("--model_config", type=str, required=True, help="Name of the model config in config/model (e.g., 'laptop', 'original').")
+	slurm_group = parser.add_argument_group("SLURM Configuration")
+	slurm_group.add_argument(
+		"--model_config",
+		type=str,
+		required=True,
+		help="Name of the model config in config/model (e.g., 'laptop', 'original').",
+	)
 	slurm_group.add_argument("--num_gpus", type=int, default=4, help="Number of GPUs to request per node.")
-	slurm_group.add_argument("--gpu_type", type=str, default="v100", help="Type of GPU to request (e.g., 'l40s', 'v100').")
+	slurm_group.add_argument(
+		"--gpu_type", type=str, default="v100", help="Type of GPU to request (e.g., 'l40s', 'v100')."
+	)
 	slurm_group.add_argument("--num_nodes", type=int, default=1, help="Number of nodes to request.")
-	slurm_group.add_argument("--time", type=str, default="1-00:00:00", help="Job time limit (e.g., '1-00:00:00').")
-	slurm_group.add_argument("--mem", type=str, default="64G", help="Memory per node (e.g., '64G').")
+	slurm_group.add_argument("--time", type=str, default="3-00:00:00", help="Job time limit (e.g., '1-00:00:00').")
+	slurm_group.add_argument("--mem", type=str, default="32G", help="Memory per node (e.g., '64G').")
 	slurm_group.add_argument("--job_name", type=str, default=None, help="Job name. Defaults to 'train-<model_config>'.")
-	slurm_group.add_argument("--mail_user", type=str, default="your_email@example.com", help="Email for notifications.")
+	slurm_group.add_argument(
+		"--mail_user", type=str, default="s221056384@deakin.edu.au", help="Email for notifications."
+	)
 
 	# Script behavior arguments
-	action_group = parser.add_argument_group('Script Actions')
-	action_group.add_argument("--dry_run", action="store_true", help="Print the generated script to stdout instead of submitting it to sbatch.")
+	action_group = parser.add_argument_group("Script Actions")
+	action_group.add_argument(
+		"--dry_run",
+		action="store_true",
+		help="Print the generated script to stdout instead of submitting it to sbatch.",
+	)
 
 	# All arguments after '--' will be treated as hydra arguments
 	args, hydra_args = parser.parse_known_args()
-	if hydra_args and hydra_args[0] == '--':
+	if hydra_args and hydra_args[0] == "--":
 		hydra_args = hydra_args[1:]
 
 	if args.job_name is None:
@@ -129,13 +155,7 @@ def main():
 	print(f"Submitting job '{args.job_name}' to SLURM...")
 	try:
 		# Use subprocess.run to pipe the script content to sbatch
-		process = subprocess.run(
-			['sbatch'],
-			input=slurm_script_content,
-			text=True,
-			capture_output=True,
-			check=True
-		)
+		process = subprocess.run(["sbatch"], input=slurm_script_content, text=True, capture_output=True, check=True)
 		print("Job submitted successfully!")
 		print(process.stdout.strip())
 		if process.stderr:

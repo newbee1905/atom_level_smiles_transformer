@@ -29,8 +29,14 @@ def _calculate_settings(n):
 
 @triton.jit
 def _row_rms_norm_fwd(
-	y_ptr, x_ptr, weight_ptr, rstd_ptr,
-	y_row_stride, x_row_stride, n_cols, eps,
+	y_ptr,
+	x_ptr,
+	weight_ptr,
+	rstd_ptr,
+	y_row_stride,
+	x_row_stride,
+	n_cols,
+	eps,
 	elementwise_affine: tl.constexpr,
 	BLOCK_SIZE: tl.constexpr,
 ):
@@ -41,7 +47,7 @@ def _row_rms_norm_fwd(
 	# Load row
 	x_ptr += row_idx * x_row_stride
 	x_row = tl.load(x_ptr + col_offsets, mask=mask, other=0.0).to(tl.float32)
-	
+
 	# Compute stats
 	mean_square = tl.sum(x_row * x_row, axis=0) / n_cols
 	rstd = rsqrt(mean_square + eps)
@@ -54,7 +60,7 @@ def _row_rms_norm_fwd(
 		y_row = normed_x * (1.0 + weight_row)
 	else:
 		y_row = normed_x
-	
+
 	# Store output
 	y_ptr += row_idx * y_row_stride
 	tl.store(y_ptr + col_offsets, y_row, mask=mask)
@@ -62,8 +68,15 @@ def _row_rms_norm_fwd(
 
 @triton.jit
 def _block_rms_norm_fwd(
-	y_ptr, x_ptr, weight_ptr, rstd_ptr,
-	y_row_stride, x_row_stride, n_rows, n_cols, eps,
+	y_ptr,
+	x_ptr,
+	weight_ptr,
+	rstd_ptr,
+	y_row_stride,
+	x_row_stride,
+	n_rows,
+	n_cols,
+	eps,
 	elementwise_affine: tl.constexpr,
 	BLOCK_SIZE: tl.constexpr,
 	BLOCK_ROW: tl.constexpr,
@@ -71,7 +84,7 @@ def _block_rms_norm_fwd(
 	row_block_idx = tl.program_id(0)
 	row_offsets = row_block_idx * BLOCK_ROW + tl.arange(0, BLOCK_ROW)
 	col_offsets = tl.arange(0, BLOCK_SIZE)
-	
+
 	row_mask = row_offsets < n_rows
 	col_mask = col_offsets < n_cols
 
@@ -81,7 +94,7 @@ def _block_rms_norm_fwd(
 	mean_square = tl.sum(x_block * x_block, axis=1) / n_cols
 	rstd = rsqrt(mean_square + eps)
 	tl.store(rstd_ptr + row_offsets, rstd, mask=row_mask)
-	
+
 	normed_x = x_block * rstd[:, None]
 
 	if elementwise_affine:
@@ -96,9 +109,18 @@ def _block_rms_norm_fwd(
 
 @triton.jit
 def _row_rms_norm_bwd(
-	dy_ptr, dx_ptr, x_ptr, weight_ptr, rstd_ptr, dweight_ptr,
-	dy_row_stride, dx_row_stride, x_row_stride, dweight_row_stride,
-	n_rows, n_cols,
+	dy_ptr,
+	dx_ptr,
+	x_ptr,
+	weight_ptr,
+	rstd_ptr,
+	dweight_ptr,
+	dy_row_stride,
+	dx_row_stride,
+	x_row_stride,
+	dweight_row_stride,
+	n_rows,
+	n_cols,
 	rows_per_program: tl.constexpr,
 	elementwise_affine: tl.constexpr,
 	BLOCK_SIZE: tl.constexpr,
@@ -112,21 +134,21 @@ def _row_rms_norm_bwd(
 	if elementwise_affine:
 		dweight_row = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
 		weight_row = (1.0 + tl.load(weight_ptr + col_offsets, mask=mask, other=0.0)).to(tl.float32)
-	
+
 	for row_idx in range(row_start, row_end):
 		dy_row = tl.load(dy_ptr + row_idx * dy_row_stride + col_offsets, mask=mask, other=0.0).to(tl.float32)
 		x_row = tl.load(x_ptr + row_idx * x_row_stride + col_offsets, mask=mask, other=0.0).to(tl.float32)
 		rstd = tl.load(rstd_ptr + row_idx)
 
 		m = dy_row * weight_row if elementwise_affine else dy_row
-		
+
 		dx_row = rstd * m
 		dx_row -= rstd * (rstd * rstd / n_cols) * tl.sum(m * x_row, axis=0) * x_row
-		
+
 		if elementwise_affine:
 			normed_x = x_row * rstd
 			dweight_row += dy_row * normed_x
-		
+
 		tl.store(dx_ptr + row_idx * dx_row_stride + col_offsets, dx_row, mask=mask)
 
 	if elementwise_affine:
@@ -135,9 +157,18 @@ def _row_rms_norm_bwd(
 
 @triton.jit
 def _block_rms_norm_bwd(
-	dy_ptr, dx_ptr, x_ptr, weight_ptr, rstd_ptr, dweight_ptr,
-	dy_row_stride, dx_row_stride, x_row_stride, dweight_row_stride,
-	n_rows, n_cols,
+	dy_ptr,
+	dx_ptr,
+	x_ptr,
+	weight_ptr,
+	rstd_ptr,
+	dweight_ptr,
+	dy_row_stride,
+	dx_row_stride,
+	x_row_stride,
+	dweight_row_stride,
+	n_rows,
+	n_cols,
 	elementwise_affine: tl.constexpr,
 	BLOCK_SIZE: tl.constexpr,
 	BLOCK_ROW: tl.constexpr,
@@ -154,22 +185,38 @@ def _block_rms_norm_bwd(
 	for start_row in range(pid * BLOCK_ROW, n_rows, num_sms * BLOCK_ROW):
 		row_offsets = start_row + tl.arange(0, BLOCK_ROW)
 		row_mask = row_offsets < n_rows
-		
-		dy_block = tl.load(dy_ptr + row_offsets[:, None] * dy_row_stride + col_offsets[None, :], mask=row_mask[:, None] & col_mask[None, :], other=0.0).to(tl.float32)
-		x_block = tl.load(x_ptr + row_offsets[:, None] * x_row_stride + col_offsets[None, :], mask=row_mask[:, None] & col_mask[None, :], other=0.0).to(tl.float32)
+
+		dy_block = tl.load(
+			dy_ptr + row_offsets[:, None] * dy_row_stride + col_offsets[None, :],
+			mask=row_mask[:, None] & col_mask[None, :],
+			other=0.0,
+		).to(tl.float32)
+		x_block = tl.load(
+			x_ptr + row_offsets[:, None] * x_row_stride + col_offsets[None, :],
+			mask=row_mask[:, None] & col_mask[None, :],
+			other=0.0,
+		).to(tl.float32)
 		rstd_block = tl.load(rstd_ptr + row_offsets, mask=row_mask, other=0.0)
 
 		m = dy_block * weight_row[None, :] if elementwise_affine else dy_block
-		
+
 		dx_block = rstd_block[:, None] * m
-		dx_block -= (rstd_block[:, None] * rstd_block[:, None] * rstd_block[:, None] / n_cols) * tl.sum(m * x_block, axis=1)[:, None] * x_block
+		dx_block -= (
+			(rstd_block[:, None] * rstd_block[:, None] * rstd_block[:, None] / n_cols)
+			* tl.sum(m * x_block, axis=1)[:, None]
+			* x_block
+		)
 
 		if elementwise_affine:
 			normed_x = x_block * rstd_block[:, None]
 			dweight_accumulator += tl.sum(dy_block * normed_x, axis=0)
 
-		tl.store(dx_ptr + row_offsets[:, None] * dx_row_stride + col_offsets[None, :], dx_block, mask=row_mask[:, None] & col_mask[None, :])
-	
+		tl.store(
+			dx_ptr + row_offsets[:, None] * dx_row_stride + col_offsets[None, :],
+			dx_block,
+			mask=row_mask[:, None] & col_mask[None, :],
+		)
+
 	if elementwise_affine:
 		tl.store(dweight_ptr + pid * dweight_row_stride + col_offsets, dweight_accumulator, mask=col_mask)
 
@@ -185,25 +232,40 @@ class _TritonRMSNorm(torch.autograd.Function):
 
 		y = torch.empty_like(x)
 		rstd = torch.empty(n_rows, dtype=torch.float32, device=x.device)
-		
+
 		use_row_wise_kernel = row_mode or (BLOCK_SIZE > 256 or n_rows < 4096 * 8)
 
 		if use_row_wise_kernel:
 			grid = (n_rows,)
 			_row_rms_norm_fwd[grid](
-				y, x, weight, rstd,
-				y.stride(0), x.stride(0), n_cols, eps,
+				y,
+				x,
+				weight,
+				rstd,
+				y.stride(0),
+				x.stride(0),
+				n_cols,
+				eps,
 				elementwise_affine=elementwise_affine,
-				BLOCK_SIZE=BLOCK_SIZE, num_warps=num_warps,
+				BLOCK_SIZE=BLOCK_SIZE,
+				num_warps=num_warps,
 			)
 		else:
 			BLOCK_ROW = 16
 			grid = (triton.cdiv(n_rows, BLOCK_ROW),)
 			_block_rms_norm_fwd[grid](
-				y, x, weight, rstd,
-				y.stride(0), x.stride(0), n_rows, n_cols, eps,
+				y,
+				x,
+				weight,
+				rstd,
+				y.stride(0),
+				x.stride(0),
+				n_rows,
+				n_cols,
+				eps,
 				elementwise_affine=elementwise_affine,
-				BLOCK_SIZE=BLOCK_SIZE, num_warps=num_warps,
+				BLOCK_SIZE=BLOCK_SIZE,
+				num_warps=num_warps,
 				BLOCK_ROW=BLOCK_ROW,
 			)
 
@@ -221,7 +283,7 @@ class _TritonRMSNorm(torch.autograd.Function):
 		shape = dy.shape
 		dy = dy.reshape(-1, shape[-1])
 		n_rows, n_cols = dy.shape
-		
+
 		dx = torch.empty_like(x) if not ctx.in_place else dy
 
 		sm_count = torch.cuda.get_device_properties(x.device).multi_processor_count
@@ -229,29 +291,49 @@ class _TritonRMSNorm(torch.autograd.Function):
 			dweight = torch.zeros((sm_count, n_cols), dtype=torch.float32, device=x.device)
 		else:
 			dweight = None
-		
+
 		use_row_wise_kernel = ctx.row_mode or (ctx.BLOCK_SIZE > 256 or n_rows < 4096 * 8)
 
 		if use_row_wise_kernel:
 			rows_per_program = triton.cdiv(n_rows, sm_count)
 			grid = (sm_count,)
 			_row_rms_norm_bwd[grid](
-				dy, dx, x, weight, rstd, dweight,
-				dy.stride(0), dx.stride(0), x.stride(0), dweight.stride(0) if ctx.elementwise_affine else 0,
-				n_rows, n_cols,
+				dy,
+				dx,
+				x,
+				weight,
+				rstd,
+				dweight,
+				dy.stride(0),
+				dx.stride(0),
+				x.stride(0),
+				dweight.stride(0) if ctx.elementwise_affine else 0,
+				n_rows,
+				n_cols,
 				rows_per_program=rows_per_program,
 				elementwise_affine=ctx.elementwise_affine,
-				BLOCK_SIZE=ctx.BLOCK_SIZE, num_warps=ctx.num_warps,
+				BLOCK_SIZE=ctx.BLOCK_SIZE,
+				num_warps=ctx.num_warps,
 			)
 		else:
 			BLOCK_ROW = 64
 			grid = (sm_count,)
 			_block_rms_norm_bwd[grid](
-				dy, dx, x, weight, rstd, dweight,
-				dy.stride(0), dx.stride(0), x.stride(0), dweight.stride(0) if ctx.elementwise_affine else 0,
-				n_rows, n_cols,
+				dy,
+				dx,
+				x,
+				weight,
+				rstd,
+				dweight,
+				dy.stride(0),
+				dx.stride(0),
+				x.stride(0),
+				dweight.stride(0) if ctx.elementwise_affine else 0,
+				n_rows,
+				n_cols,
 				elementwise_affine=ctx.elementwise_affine,
-				BLOCK_SIZE=ctx.BLOCK_SIZE, num_warps=ctx.num_warps,
+				BLOCK_SIZE=ctx.BLOCK_SIZE,
+				num_warps=ctx.num_warps,
 				BLOCK_ROW=BLOCK_ROW,
 			)
 

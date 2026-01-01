@@ -26,7 +26,11 @@ else
 	echo "Warning: .venv directory not found. Assuming environment is already active."
 fi
 
-export PYTHONPATH=$PYTHONPATH:.
+if [ -z "${PYTHONPATH:-}" ]; then
+	export PYTHONPATH=.
+else
+	export PYTHONPATH="$PYTHONPATH:."
+fi
 
 if command -v nvidia-smi &> /dev/null; then
 	NUM_GPUS=$(nvidia-smi --query-gpu=count --format=csv,noheader)

@@ -1,5 +1,6 @@
 defaults:
   - model: laptop
+  - task: finetune_uspto_sep
   - _self_
 
 # hydra configuration
@@ -15,23 +16,15 @@ model:
   vocab_path: config/vocab.yaml
   max_length: ${model.block_size}
 
-dataset:
-  lmdb_path: data/zinc.lmdb
-  mask_prob: 0.30
-  span_len: 3
-  augment_prob: 1.0
-  span_mask_proportion: 1.0 
-  span_random_proportion: 0.0
-
 training:
-  batch_size: 16
-  num_workers: 2
-  epochs: 10
+  batch_size: 128
+  num_workers: 10
+  epochs: 40
   optimizer:
     lr: 0.0001
     weight_decay: 0.01
   logger: "wandb" # "tensorboard" or "wandb"
-  compile: false
+  compile: true
   dtype: "bfloat16" # or "float16" or "float32"
   grad_accum_steps: 1
   grad_clip: 1.0

@@ -426,6 +426,7 @@ impl SMILESTokenizer {
 	fn index_to_token(&self, idx: usize) -> Option<String> {
 		self.itos.get(&idx).cloned()
 	}
+
 }
 
 /// Static helper function for tokenization

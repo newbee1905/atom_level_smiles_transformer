@@ -1,14 +1,10 @@
-from pyroaring import BitMap
-
-import lmdb
-import numpy as np
 import torch
-import zstandard as zstd
+import numpy as np
 from rdkit import Chem
-from torch.utils.data import Dataset
 
+from dataset.utils import LMDBDataset, prepare_sequence
 
-class ZincDataset(Dataset):
+class ZincDataset(LMDBDataset):
 	def __init__(
 		self,
 		lmdb_path,
@@ -22,17 +18,13 @@ class ZincDataset(Dataset):
 		span_mask_proportion=1.0,
 		span_random_proportion=0.0,
 	):
-		self.lmdb_path = lmdb_path
+		super().__init__(lmdb_path, max_length, subset_indices, is_training)
 		self.tokenizer = tokenizer
-		self.max_length = max_length
 		self.mask_prob = mask_prob
 		self.span_len = span_len
 		self.augment_prob = augment_prob
-		self.is_training = is_training
-		self.indices = subset_indices
 		self.span_mask_proportion = span_mask_proportion
 		self.span_random_proportion = span_random_proportion
-		self.env = None
 
 		# Get special token IDs
 		self.mask_token_id = self.tokenizer.token_to_index("<MASK>")
@@ -48,40 +40,6 @@ class ZincDataset(Dataset):
 			self.eos_token_id,
 			self.unk_token_id,
 		}
-
-		env = lmdb.open(self.lmdb_path, readonly=True, lock=False)
-		with env.begin(write=False) as txn:
-			self.full_length = int(txn.get(b"__len__").decode("ascii"))
-		env.close()
-
-		if self.indices is None:
-			self.indices = list(range(self.full_length))
-
-	def _init_db(self):
-		if self.env is None:
-			self.env = lmdb.open(
-				self.lmdb_path,
-				readonly=True,
-				lock=False,
-				readahead=not self.is_training,
-				meminit=False,
-			)
-
-	def __len__(self):
-		return len(self.indices)
-
-	@classmethod
-	def read_split_indices(cls, lmdb_path, split_name):
-		env = lmdb.open(lmdb_path, readonly=True, lock=False)
-		with env.begin(write=False) as txn:
-			compressed_indices = txn.get(f"split_{split_name}".encode("ascii"))
-			if compressed_indices is None:
-				raise ValueError(f"Split '{split_name}' not found in LMDB at {lmdb_path}")
-
-			raw_bytes = zstd.decompress(compressed_indices)
-			bitmap = BitMap.deserialize(raw_bytes)
-			split_indices = np.array(bitmap, dtype=np.uint32)
-		return split_indices
 
 	def randomize_smiles(self, smiles):
 		"""Default RDKit randomization."""
@@ -169,7 +127,6 @@ class ZincDataset(Dataset):
 			(self.randomize_smiles(smi) if np.random.rand() < self.augment_prob else smi) if self.is_training else smi
 		)
 
-		# Tokenize, but without special tokens or padding yet
 		core_token_ids, _ = self.tokenizer.encode(
 			augmented_smiles,
 			add_bos=False,
@@ -182,23 +139,12 @@ class ZincDataset(Dataset):
 		# Apply span masking to create the source sequence
 		masked_core_token_ids, span_mask_unpadded, is_fake_unpadded = self.apply_span_masking(core_token_ids)
 
-		# Prepare src and tgt sequences with special tokens and padding
-		def prepare_sequence(ids, pad_id):
-			ids = np.concatenate([[self.bos_token_id], ids, [self.eos_token_id]]).astype(int)
-			seq_len = len(ids)
-			padding_len = self.max_length - seq_len
-
-			padded_ids = np.pad(ids, (0, padding_len), "constant", constant_values=pad_id)
-			attention_mask = np.pad(
-				np.ones(seq_len, dtype=int),
-				(0, padding_len),
-				"constant",
-				constant_values=0,
-			)
-			return padded_ids, attention_mask
-
-		src_ids, src_attention_mask = prepare_sequence(masked_core_token_ids, self.pad_token_id)
-		tgt_ids, tgt_attention_mask = prepare_sequence(core_token_ids, self.pad_token_id)
+		src_ids, src_attention_mask = prepare_sequence(
+			masked_core_token_ids, self.max_length, self.bos_token_id, self.eos_token_id, self.pad_token_id
+		)
+		tgt_ids, tgt_attention_mask = prepare_sequence(
+			core_token_ids, self.max_length, self.bos_token_id, self.eos_token_id, self.pad_token_id
+		)
 
 		# Prepare electra_labels (aligned with src)
 		seq_len_src = len(masked_core_token_ids) + 2
