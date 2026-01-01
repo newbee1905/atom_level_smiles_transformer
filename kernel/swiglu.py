@@ -1,6 +1,6 @@
 """
-This Triton kernel is an optimized implementation of the SwiGLU activation function,
-inspired by the version in liger-kernel (Apache License, Version 2.0).
+This Triton kernel is the SwiGLU activation function,
+based on the version in liger-kernel (Apache License, Version 2.0).
 It includes custom autotune configurations for a range of GPUs (H100, L40S, V100, 1650, etc.),
 ensuring efficient performance across different hardware.
 """
