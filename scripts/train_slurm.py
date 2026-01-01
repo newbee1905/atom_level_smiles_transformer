@@ -116,6 +116,15 @@ def main():
 		"--mail_user", type=str, default="s221056384@deakin.edu.au", help="Email for notifications."
 	)
 
+	# Task arguments
+	task_group = parser.add_argument_group("Task Configuration")
+	task_group.add_argument(
+		"--pretrain_model_path",
+		type=str,
+		default=None,
+		help="Path to a pretrained model checkpoint to load for fine-tuning. Overrides `task.pretrain_checkpoint`.",
+	)
+
 	# Script behavior arguments
 	action_group = parser.add_argument_group("Script Actions")
 	action_group.add_argument(
@@ -131,6 +140,10 @@ def main():
 
 	if args.job_name is None:
 		args.job_name = f"train-{args.model_config}"
+
+	# Add pretrain_model_path to hydra args if provided
+	if args.pretrain_model_path:
+		hydra_args.append(f"task.pretrain_checkpoint='{args.pretrain_model_path}'")
 
 	hydra_args_str = " ".join(hydra_args)
 	Path("logs").mkdir(exist_ok=True)
