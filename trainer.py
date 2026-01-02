@@ -153,6 +153,7 @@ class Trainer:
 					adamw_decay_params.append(p)
 
 		optimizer_cfg = self.cfg.training.optimizer
+		muon_lr_multiplier = optimizer_cfg.get("muon_lr_multiplier", 100.0)
 		param_groups = [
 			{"params": muon_params, "use_muon": True},
 			{
@@ -164,9 +165,9 @@ class Trainer:
 		]
 
 		if self.is_ddp:
-			self.optimizer = DistMuon(param_groups, lr=optimizer_cfg.lr, weight_decay=optimizer_cfg.weight_decay)
+			self.optimizer = DistMuon(param_groups, lr=optimizer_cfg.lr, weight_decay=optimizer_cfg.weight_decay, muon_lr_multiplier=muon_lr_multiplier)
 		else:
-			self.optimizer = Muon(param_groups, lr=optimizer_cfg.lr, weight_decay=optimizer_cfg.weight_decay)
+			self.optimizer = Muon(param_groups, lr=optimizer_cfg.lr, weight_decay=optimizer_cfg.weight_decay, muon_lr_multiplier=muon_lr_multiplier)
 
 		optimizer_cfg = self.cfg.training.optimizer
 		total_steps = (len(self.train_loader) * self.cfg.training.epochs) // self.grad_accum_steps

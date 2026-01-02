@@ -81,17 +81,18 @@ class Muon(torch.optim.Optimizer):
 		ns_steps=5,
 		adam_betas=(0.8, 0.95),
 		adam_eps=1e-8,
+		muon_lr_multiplier=100.0,
 	):
 		for group in param_groups:
 			assert "use_muon" in group, "Each param_group must have a 'use_muon' flag."
 			if group["use_muon"]:
-				group.setdefault("lr", lr)
+				group.setdefault("lr", lr * muon_lr_multiplier)
 				group.setdefault("momentum", momentum)
 				group.setdefault("weight_decay", weight_decay)
 				group.setdefault("nesterov", nesterov)
 				group.setdefault("ns_steps", ns_steps)
 			else:
-				group.setdefault("lr", lr * 0.01)
+				group.setdefault("lr", lr)
 				group.setdefault("betas", adam_betas)
 				group.setdefault("eps", adam_eps)
 				group.setdefault("weight_decay", weight_decay)
@@ -168,6 +169,7 @@ class DistMuon(torch.optim.Optimizer):
 		ns_steps=5,
 		adam_betas=(0.8, 0.95),
 		adam_eps=1e-8,
+		muon_lr_multiplier=100.0,
 	):
 		defaults = dict(
 			lr=lr,
@@ -189,7 +191,7 @@ class DistMuon(torch.optim.Optimizer):
 			if group["use_muon"]:
 				# Extract settings for this specific group to preserve them after reshaping
 				g_settings = {
-					"lr": group.get("lr", lr),
+					"lr": group.get("lr", lr * muon_lr_multiplier),
 					"weight_decay": group.get("weight_decay", weight_decay),
 					"momentum": group.get("momentum", momentum),
 					"nesterov": group.get("nesterov", nesterov),
@@ -203,7 +205,7 @@ class DistMuon(torch.optim.Optimizer):
 				group.setdefault("betas", adam_betas)
 				group.setdefault("eps", adam_eps)
 				if "lr" not in group:
-					group["lr"] = lr * 0.01
+					group["lr"] = lr
 
 				adamw_groups.append(group)
 
