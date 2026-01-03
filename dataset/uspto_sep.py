@@ -6,6 +6,7 @@ from rdkit import Chem
 
 from dataset.utils import LMDBDataset, prepare_sequence
 
+
 class UsptoSepDataset(LMDBDataset):
 	def __init__(
 		self,
@@ -16,11 +17,13 @@ class UsptoSepDataset(LMDBDataset):
 		augment_prob=1.0,
 		is_training=False,
 		retro=False,
+		**kwargs,
 	):
 		super().__init__(lmdb_path, max_length, subset_indices, is_training)
 		self.tokenizer = tokenizer
 		self.augment_prob = augment_prob
 		self.retro = retro
+		self.return_smiles = kwargs.get("return_smiles", False)
 
 		self.pad_token_id = self.tokenizer.token_to_index("<PAD>")
 		self.bos_token_id = self.tokenizer.token_to_index("<BOS>")
@@ -82,12 +85,18 @@ class UsptoSepDataset(LMDBDataset):
 			tgt_core_ids, self.max_length, self.bos_token_id, self.eos_token_id, self.pad_token_id
 		)
 
-		return {
+		result = {
 			"src": torch.from_numpy(src_ids),
 			"src_attention_mask": torch.from_numpy(src_attention_mask),
 			"tgt": torch.from_numpy(tgt_ids),
 			"tgt_attention_mask": torch.from_numpy(tgt_attention_mask),
 		}
+
+		if self.return_smiles:
+			result["source_smiles"] = source_smiles
+			result["target_smiles"] = target_smiles
+
+		return result
 
 
 if __name__ == "__main__":

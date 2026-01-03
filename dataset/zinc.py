@@ -4,6 +4,7 @@ from rdkit import Chem
 
 from dataset.utils import LMDBDataset, prepare_sequence
 
+
 class ZincDataset(LMDBDataset):
 	def __init__(
 		self,
@@ -17,6 +18,7 @@ class ZincDataset(LMDBDataset):
 		is_training=False,
 		span_mask_proportion=1.0,
 		span_random_proportion=0.0,
+		**kwargs,
 	):
 		super().__init__(lmdb_path, max_length, subset_indices, is_training)
 		self.tokenizer = tokenizer
@@ -25,6 +27,7 @@ class ZincDataset(LMDBDataset):
 		self.augment_prob = augment_prob
 		self.span_mask_proportion = span_mask_proportion
 		self.span_random_proportion = span_random_proportion
+		self.return_smiles = kwargs.get("return_smiles", False)
 
 		# Get special token IDs
 		self.mask_token_id = self.tokenizer.token_to_index("<MASK>")
@@ -174,6 +177,11 @@ class ZincDataset(LMDBDataset):
 			"span_mask": torch.from_numpy(span_mask),
 			"electra_labels": torch.from_numpy(electra_labels).float(),
 		}
+
+		if self.return_smiles:
+			result["original_smiles"] = augmented_smiles
+
+		return result
 
 
 if __name__ == "__main__":

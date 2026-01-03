@@ -7,7 +7,7 @@ import hydra
 from omegaconf import DictConfig, OmegaConf
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
-from transformers import get_linear_schedule_with_warmup
+from transformers import get_linear_schedule_with_warmup, get_cosine_schedule_with_warmup
 import itertools
 
 from optimizer import Muon, DistMuon
@@ -165,17 +165,51 @@ class Trainer:
 		]
 
 		if self.is_ddp:
-			self.optimizer = DistMuon(param_groups, lr=optimizer_cfg.lr, weight_decay=optimizer_cfg.weight_decay, muon_lr_multiplier=muon_lr_multiplier)
+			self.optimizer = DistMuon(
+				param_groups,
+				lr=optimizer_cfg.lr,
+				weight_decay=optimizer_cfg.weight_decay,
+				muon_lr_multiplier=muon_lr_multiplier,
+			)
 		else:
-			self.optimizer = Muon(param_groups, lr=optimizer_cfg.lr, weight_decay=optimizer_cfg.weight_decay, muon_lr_multiplier=muon_lr_multiplier)
+			self.optimizer = Muon(
+				param_groups,
+				lr=optimizer_cfg.lr,
+				weight_decay=optimizer_cfg.weight_decay,
+				muon_lr_multiplier=muon_lr_multiplier,
+			)
 
-		optimizer_cfg = self.cfg.training.optimizer
+		scheduler_cfg = self.cfg.training.scheduler
+		scheduler_name = scheduler_cfg.get("name", "linear")
 		total_steps = (len(self.train_loader) * self.cfg.training.epochs) // self.grad_accum_steps
-		warmup_steps = optimizer_cfg.get("warmup_steps", 10000)
+		warmup_steps = scheduler_cfg.get("warmup_steps", 10000)
 
-		self.scheduler = get_linear_schedule_with_warmup(
-			self.optimizer, num_warmup_steps=warmup_steps, num_training_steps=total_steps
-		)
+		if scheduler_name == "linear":
+			self.scheduler = get_linear_schedule_with_warmup(
+				self.optimizer, num_warmup_steps=warmup_steps, num_training_steps=total_steps
+			)
+		elif scheduler_name == "cosine":
+			self.scheduler = get_cosine_schedule_with_warmup(
+				self.optimizer, num_warmup_steps=warmup_steps, num_training_steps=total_steps
+			)
+		elif scheduler_name == "onecycle":
+			adamw_max_lr = scheduler_cfg.get("max_lr", 0.01)
+			max_lrs = []
+			for group in self.optimizer.param_groups:
+				if group.get("use_muon", False):
+					max_lrs.append(adamw_max_lr * muon_lr_multiplier)
+				else:
+					max_lrs.append(adamw_max_lr)
+
+			self.scheduler = OneCycleLR(
+				self.optimizer,
+				max_lr=max_lrs,
+				total_steps=total_steps,
+				pct_start=scheduler_cfg.get("pct_start", 0.3),
+				anneal_strategy="cos",
+			)
+		else:
+			raise ValueError(f"Unknown scheduler: {scheduler_name}")
 
 		self.grad_clip = self.cfg.training.get("grad_clip", 1.0)
 		self.name = self.cfg.model.get("name", "model")

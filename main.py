@@ -1,6 +1,7 @@
 import os
 import hydra
 from omegaconf import DictConfig, OmegaConf
+from tqdm import tqdm
 
 import torch
 import torch.distributed as dist
@@ -145,6 +146,74 @@ def main(cfg: DictConfig):
 				print(f"Missing keys in state_dict: {missing_keys}")
 			if unexpected_keys:
 				print(f"Unexpected keys in state_dict: {unexpected_keys}")
+
+		# HACK: a section to verify the loaded model on ZINC test set
+		if rank == 0 and cfg.dataset.name != "zinc":
+			print("\nVerifying loaded model on ZINC test set...")
+			verify_on_zinc(model, tokenizer, cfg, device)
+			print("Verification complete. Starting fine-tuning...\n")
+
+
+def verify_on_zinc(model, tokenizer, cfg, device):
+	"""Runs a one-time evaluation on the ZINC test set."""
+	zinc_lmdb_path = hydra.utils.to_absolute_path("data/zinc.lmdb")
+	if not os.path.exists(zinc_lmdb_path):
+		print(f"ZINC LMDB not found at {zinc_lmdb_path}, skipping verification.")
+		return
+
+	# Use default ZINC dataset args for verification
+	zinc_args = {
+		"mask_prob": 0.30,
+		"span_len": 3,
+		"augment_prob": 0.0,
+		"is_training": False,
+		"span_mask_proportion": 1.0,
+		"span_random_proportion": 0.0,
+	}
+
+	zinc_test_indices = ZincDataset.read_split_indices(zinc_lmdb_path, "test")
+	zinc_test_ds = ZincDataset(
+		lmdb_path=zinc_lmdb_path,
+		subset_indices=zinc_test_indices,
+		tokenizer=tokenizer,
+		max_length=cfg.model.max_length,
+		**zinc_args,
+	)
+	zinc_test_dl = DataLoader(
+		zinc_test_ds,
+		batch_size=cfg.training.batch_size * 2,  # Use larger batch size for eval
+		shuffle=False,
+		num_workers=cfg.training.num_workers,
+		pin_memory=True,
+	)
+
+	criterion = torch.nn.CrossEntropyLoss(ignore_index=cfg.model.pad_token_id)
+	model.eval()
+	running_loss = 0.0
+	total_tokens = 0
+	correct_tokens = 0
+	pad_id = cfg.model.pad_token_id
+	dtype = getattr(torch, cfg.training.get("dtype", "bfloat16"))
+	use_amp = (dtype == torch.float16) and ("cuda" in device.type)
+
+	with torch.no_grad():
+		for batch in tqdm(zinc_test_dl, desc="Verifying on ZINC"):
+			batch = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
+			with torch.autocast(device_type=device.type, dtype=dtype, enabled=use_amp):
+				decoder_input = batch["tgt"][:, :-1].contiguous()
+				labels = batch["tgt"][:, 1:].contiguous()
+				gen_logits, _, _, _, _ = model(batch["src"], decoder_input)
+				loss = criterion(gen_logits.view(-1, gen_logits.size(-1)), labels.view(-1))
+
+			running_loss += loss.item()
+			preds = torch.argmax(gen_logits, dim=-1)
+			mask = labels != pad_id
+			correct_tokens += torch.sum(preds[mask] == labels[mask]).item()
+			total_tokens += torch.sum(mask).item()
+
+	avg_loss = running_loss / len(zinc_test_dl)
+	token_accuracy = (correct_tokens / total_tokens) if total_tokens > 0 else 0.0
+	print(f"ZINC Test Set Verification Results -> Loss: {avg_loss:.4f}, Token Accuracy: {token_accuracy:.4f}")
 
 	if rank == 0:
 		print(f"Total number of trainable parameters in the BART model: {count_parameters(model)}")

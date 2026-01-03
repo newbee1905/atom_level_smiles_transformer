@@ -21,7 +21,7 @@ training:
   num_workers: 0
   epochs: 40
   optimizer:
-    lr: 5e-5
+    lr: 2e-5
     weight_decay: 0.01
     muon_lr_multiplier: 100.0
   logger: "wandb" # "tensorboard" or "wandb"
@@ -29,8 +29,14 @@ training:
   dtype: "float16" # or "float16" or "float32"
   grad_accum_steps: 1
   grad_clip: 1.0
-  early_stopping_patience: 15
+  early_stopping_patience: 3
   electra_loss_weight: 50.0
+  scheduler:
+    name: "linear" # "linear", "cosine", "onecycle"
+    warmup_steps: 10000
+    # For OneCycleLR
+    max_lr: 0.01
+    pct_start: 0.3
   softcap:
     enabled: false
     value: 30.0
