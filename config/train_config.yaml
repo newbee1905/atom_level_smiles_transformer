@@ -6,7 +6,7 @@ defaults:
 # hydra configuration
 hydra:
   run:
-    dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    dir: outputs/${task.name}/${model.name}/${now:%Y-%m-%d}_${now:%H-%M-%S}
 
 wandb:
   project: "chemformer"

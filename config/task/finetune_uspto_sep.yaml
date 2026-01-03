@@ -1,7 +1,7 @@
 # @package _global_
 task:
   name: finetune_uspto
-  pretrain_checkpoint: null # e.g., 'path/to/zinc_pretrained.pth'
+  pretrain_checkpoint: 'path/to/your/zinc_pretrained.pth' # TODO: Set this to the actual path of your pretrained model
 
 dataset:
   name: uspto_sep

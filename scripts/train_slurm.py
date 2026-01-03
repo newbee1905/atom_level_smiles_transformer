@@ -115,6 +115,7 @@ def main():
 	slurm_group.add_argument(
 		"--mail_user", type=str, default="s221056384@deakin.edu.au", help="Email for notifications."
 	)
+	slurm_group.add_argument("--run_tag", type=str, default=None, help="Optional custom tag for the run name and logs.")
 
 	# Task arguments
 	task_group = parser.add_argument_group("Task Configuration")
@@ -138,12 +139,27 @@ def main():
 	if hydra_args and hydra_args[0] == "--":
 		hydra_args = hydra_args[1:]
 
+	# Generate a more descriptive job name
+	task_name = "task"
+	for arg in hydra_args:
+		if arg.startswith("task="):
+			task_name = arg.split("=")[-1]
+			break
+
 	if args.job_name is None:
-		args.job_name = f"train-{args.model_config}"
+		base_name = f"{task_name}-{args.model_config}"
+		if args.run_tag:
+			args.job_name = f"{base_name}-{args.run_tag}"
+		else:
+			args.job_name = base_name
 
 	# Add pretrain_model_path to hydra args if provided
 	if args.pretrain_model_path:
 		hydra_args.append(f"task.pretrain_checkpoint='{args.pretrain_model_path}'")
+
+	# Add run_tag to hydra args if provided
+	if args.run_tag:
+		hydra_args.append(f"run_tag='{args.run_tag}'")
 
 	hydra_args_str = " ".join(hydra_args)
 	Path("logs").mkdir(exist_ok=True)

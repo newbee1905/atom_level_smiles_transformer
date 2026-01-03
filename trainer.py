@@ -39,7 +39,23 @@ class UnifiedLogger:
 				else:
 					load_dotenv()
 					model_name = cfg.model.get("name", "model")
-					run_name = wandb_cfg.get("name") or f"{model_name}-{hydra_output_dir.name}"
+					task_name = cfg.task.get("name", "task")
+					run_tag = cfg.get("run_tag")
+
+					# Build a more descriptive name
+					name_parts = [f"{task_name}-{model_name}"]
+					if run_tag:
+						name_parts.append(run_tag)
+					
+					# Add unique timestamp from hydra's output dir
+					date_part = hydra_output_dir.parent.name
+					time_part = hydra_output_dir.name
+					name_parts.append(f"{date_part}_{time_part}")
+
+					final_run_name = "-".join(name_parts)
+					
+					# Use the generated name unless a specific name is provided in the config
+					run_name = cfg.wandb.get("name") or final_run_name
 
 					wandb.init(
 						project=wandb_cfg.project,
