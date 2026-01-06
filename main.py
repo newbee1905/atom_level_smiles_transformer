@@ -153,6 +153,22 @@ def main(cfg: DictConfig):
 			verify_on_zinc(model, tokenizer, cfg, device)
 			print("Verification complete. Starting fine-tuning...\n")
 
+	if rank == 0:
+		print(f"Total number of trainable parameters in the BART model: {count_parameters(model)}")
+
+	trainer = Trainer(
+		cfg=cfg,
+		model=model,
+		train_loader=train_dl,
+		val_loader=val_dl,
+		device=device,
+		rank=rank,
+		world_size=world_size,
+	)
+
+	trainer.train()
+	cleanup_ddp()
+
 
 def verify_on_zinc(model, tokenizer, cfg, device):
 	"""Runs a one-time evaluation on the ZINC test set."""
@@ -214,22 +230,6 @@ def verify_on_zinc(model, tokenizer, cfg, device):
 	avg_loss = running_loss / len(zinc_test_dl)
 	token_accuracy = (correct_tokens / total_tokens) if total_tokens > 0 else 0.0
 	print(f"ZINC Test Set Verification Results -> Loss: {avg_loss:.4f}, Token Accuracy: {token_accuracy:.4f}")
-
-	if rank == 0:
-		print(f"Total number of trainable parameters in the BART model: {count_parameters(model)}")
-
-	trainer = Trainer(
-		cfg=cfg,
-		model=model,
-		train_loader=train_dl,
-		val_loader=val_dl,
-		device=device,
-		rank=rank,
-		world_size=world_size,
-	)
-
-	trainer.train()
-	cleanup_ddp()
 
 
 if __name__ == "__main__":
