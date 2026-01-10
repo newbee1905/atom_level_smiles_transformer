@@ -34,6 +34,13 @@ class Bart(nn.Module):
 		super().__init__()
 		self.config = config
 
+		# Adjust vocab_size to be divisible by a number for performance.
+		vocab_size_divisor = getattr(config, "vocab_size_divisor", 128)
+		if config.vocab_size % vocab_size_divisor != 0:
+			config.vocab_size = (
+				(config.vocab_size + vocab_size_divisor - 1) // vocab_size_divisor * vocab_size_divisor
+			)
+
 		self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
 		self.electra_task = getattr(config, "electra_task", False)
 		self.tie_word_embeddings = getattr(config, "tie_word_embeddings", True)
