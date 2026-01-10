@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .utils import apply_rope, apply_rope_torch
+from .utils import apply_rope_liger, apply_rope_torch, apply_rope_triton
 from .norm import get_norm_class
 
 
@@ -27,7 +27,13 @@ class MHA(nn.Module):
 		self.use_qk_norm = config.use_qk_norm
 		self.use_gate = config.use_gate
 		self.is_decoder = is_decoder
-		self.use_liger_rope = config.use_liger_rope
+
+		if not getattr(config, "use_liger_rope", False):
+			self.apply_rope = apply_rope_torch
+		elif getattr(config, "use_default_liger_rope", False):
+			self.apply_rope = apply_rope_liger
+		else:
+			self.apply_rope = apply_rope_triton
 
 		# Key, query, value projections
 		self.q_proj = nn.Linear(config.d_model, config.d_model, bias=False)
@@ -78,10 +84,10 @@ class MHA(nn.Module):
 		# Apply RoPE for self-attention
 		if not is_cross_attention:
 			total_seq_len = seq_len + seq_len_past
-			if self.use_liger_rope:
-				q, k = apply_rope(q, k, freqs_cos, freqs_sin)
+			if self.apply_rope is apply_rope_triton:
+				q, k = self.apply_rope(q, k, freqs_cos, freqs_sin)
 			else:
-				q, k = apply_rope_torch(q, k, freqs_cos, freqs_sin, seq_len=total_seq_len)
+				q, k = self.apply_rope(q, k, freqs_cos, freqs_sin, seq_len=total_seq_len)
 
 		if self.use_qk_norm:
 			q = self.q_norm(q)

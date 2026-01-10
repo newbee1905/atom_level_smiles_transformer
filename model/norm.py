@@ -38,14 +38,14 @@ def get_norm_class(config):
 	"""
 	Returns the appropriate RMSNorm class based on the configuration.
 	"""
-	use_triton = getattr(config, "use_liger_norm", False)
-	if use_triton:
+	if not getattr(config, "use_liger_norm", False):
+		return RMSNormTorch
+
+	if getattr(config, "use_default_liger_norm", False):
+		from liger_kernel.transformers.rms_norm import LigerRMSNormForGemma as RMSNorm
+
+		return RMSNorm
+	else:
 		# The TritonRMSNorm is hardcoded for Gemma-style normalization
 		# with a unit offset, which is compatible.
 		return TritonRMSNorm
-	else:
-		# RMSNormTorch requires the `dim` argument.
-		# We can return a lambda to make the signature compatible or
-		# just return the class and let the caller handle it.
-		# Let's check compatibility. Both take hidden_size/dim as the first arg.
-		return RMSNormTorch

@@ -44,7 +44,7 @@ def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
 	return torch.cos(freqs), torch.sin(freqs)
 
 
-def apply_rope(
+def apply_rope_triton(
 	q: torch.Tensor,
 	k: torch.Tensor,
 	freqs_cos: torch.Tensor,
@@ -77,6 +77,27 @@ def apply_rope(
 
 	# The autograd function handles layout detection and kernel dispatch.
 	return TritonRoPEFunction.apply(q, k, cos, sin)
+
+
+def apply_rope_liger(
+	q: torch.Tensor,
+	k: torch.Tensor,
+	freqs_cos: torch.Tensor,
+	freqs_sin: torch.Tensor,
+	seq_len: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+	from liger_kernel.transformers.rope import liger_rotary_pos_emb
+
+	T = q.size(2)
+
+	freqs_cos = freqs_cos[seq_len - T : seq_len].contiguous()
+	freqs_sin = freqs_sin[seq_len - T : seq_len].contiguous()
+	freqs_cos = freqs_cos.unsqueeze(0)
+	freqs_sin = freqs_sin.unsqueeze(0)
+
+	q_out, k_out = liger_rotary_pos_emb(q=q, k=k, cos=freqs_cos.to(q.dtype), sin=freqs_sin.to(q.dtype))
+
+	return q_out.type_as(q), k_out.type_as(k)
 
 
 def apply_rope_torch(

@@ -1,6 +1,6 @@
 defaults:
   - model: laptop
-  - task: finetune_uspto_sep
+  - task: pretrain_zinc
   - _self_
 
 # hydra configuration
@@ -17,7 +17,7 @@ model:
   max_length: ${model.block_size}
 
 training:
-  batch_size: 128
+  batch_size: 16
   num_workers: 0
   epochs: 40
   optimizer:

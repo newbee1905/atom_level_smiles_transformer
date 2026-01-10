@@ -46,14 +46,14 @@ class UnifiedLogger:
 					name_parts = [f"{task_name}-{model_name}"]
 					if run_tag:
 						name_parts.append(run_tag)
-					
+
 					# Add unique timestamp from hydra's output dir
 					date_part = hydra_output_dir.parent.name
 					time_part = hydra_output_dir.name
 					name_parts.append(f"{date_part}_{time_part}")
 
 					final_run_name = "-".join(name_parts)
-					
+
 					# Use the generated name unless a specific name is provided in the config
 					run_name = cfg.wandb.get("name") or final_run_name
 

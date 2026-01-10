@@ -20,4 +20,7 @@ max_relative_positions: 202
 use_liger_ff: true
 use_liger_norm: true
 use_liger_rope: true
+use_default_liger_ff: false
+use_default_liger_norm: false
+use_default_liger_rope: false
 

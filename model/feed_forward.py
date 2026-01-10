@@ -13,6 +13,7 @@ class FeedForward(nn.Module):
 		super().__init__()
 		d_model = config.d_model
 		intermediate_size = int(d_model * config.ffn_multiplier)
+		self.config = config
 
 		# Linear layers for SwiGLU (3 separate projections)
 		self.up_proj = nn.Linear(d_model, intermediate_size, bias=False)
@@ -20,8 +21,16 @@ class FeedForward(nn.Module):
 		self.gate_proj = nn.Linear(d_model, intermediate_size, bias=False)
 		self.dropout = nn.Dropout(config.dropout)
 
+		use_default_liger = getattr(config, "use_default_liger_ff", False)
+		if use_default_liger:
+			from liger_kernel.ops.swiglu import LigerSiLUMulFunction
+
+			self.swiglu_fn = LigerSiLUMulFunction.apply
+		else:
+			self.swiglu_fn = TritonSwiGLUFunction.apply
+
 	def forward(self, x):
-		output = self.down_proj(TritonSwiGLUFunction.apply(self.up_proj(x), self.gate_proj(x)))
+		output = self.down_proj(self.swiglu_fn(self.up_proj(x), self.gate_proj(x)))
 		output = self.dropout(output)
 
 		return output

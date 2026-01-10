@@ -22,4 +22,7 @@ use_liger_ff: false
 use_liger_norm: false
 use_liger_rope: true
 tie_word_embeddings: true
+use_default_liger_ff: false
+use_default_liger_norm: false
+use_default_liger_rope: false
 

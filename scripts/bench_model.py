@@ -11,6 +11,7 @@ from model.bart import Bart
 from chemformer_rs.tokenizer import SMILESTokenizer
 from dataset.zinc import ZincDataset
 
+
 def count_parameters(model):
 	"""Counts the number of trainable parameters in a model."""
 	num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -134,34 +135,43 @@ def run_benchmark(cfg: DictConfig):
 @hydra.main(config_path="../config", config_name="train_config", version_base="1.3")
 def main(cfg: DictConfig):
 	"""
-	Main benchmarking function to compare Liger vs. Torch implementations.
+	Main benchmarking function to compare Liger, Triton, and Torch implementations.
 	"""
-	print("--- Liger vs. Torch Benchmark Script ---")
+	print("--- Kernel Benchmark Script ---")
 	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 	if device.type == "cuda":
 		print(f"GPU: {torch.cuda.get_device_name(0)}")
 
-	liger_flags = ["use_liger_ff", "use_liger_norm", "use_liger_rope"]
-	flag_combinations = list(itertools.product([True, False], repeat=len(liger_flags)))
+	components = ["ff", "norm", "rope"]
+	kernels = ["torch", "triton", "liger"]
+
+	kernel_combinations = list(itertools.product(kernels, repeat=len(components)))
 
 	results = []
 
-	for combo in flag_combinations:
+	for combo in kernel_combinations:
 		temp_cfg = cfg.copy()
-		combo_dict = dict(zip(liger_flags, combo))
+		combo_map = dict(zip(components, combo))
 
-		# Create a readable name for the combination
-		combo_name = []
-		for flag, value in combo_dict.items():
-			name = flag.split("_")[-1].upper()
-			prefix = "L" if value else "T"
-			combo_name.append(f"{prefix}-{name}")
-		combo_name = " | ".join(combo_name)
-
+		combo_name = " | ".join([f"{kernel.upper():<8}" for kernel in combo])
 		print(f"\n--- Benchmarking: {combo_name} ---")
 
+		config_updates = {}
+		for component, kernel_type in combo_map.items():
+			use_liger_flag = f"use_liger_{component}"
+			use_default_liger_flag = f"use_default_liger_{component}"
+
+			if kernel_type == "torch":
+				config_updates[use_liger_flag] = False
+			elif kernel_type == "triton":
+				config_updates[use_liger_flag] = True
+				config_updates[use_default_liger_flag] = False
+			elif kernel_type == "liger":
+				config_updates[use_liger_flag] = True
+				config_updates[use_default_liger_flag] = True
+
 		OmegaConf.set_struct(temp_cfg, False)
-		for flag, value in combo_dict.items():
+		for flag, value in config_updates.items():
 			temp_cfg.model[flag] = value
 		OmegaConf.set_struct(temp_cfg, True)
 
@@ -188,7 +198,7 @@ def main(cfg: DictConfig):
 				}
 			)
 
-	print("\n\n--- Benchmark Results Summary ---")
+	print("\n\n--- Benchmark Results Summary (FF | Norm | RoPE) ---")
 
 	# Header
 	header = f"{'Combination':<30} | {'Throughput (batch/s)':<25} | {'Peak Memory (GB)':<20}"
@@ -208,6 +218,7 @@ def main(cfg: DictConfig):
 		print(row)
 
 	print("\nBenchmark complete.")
+
 
 if __name__ == "__main__":
 	main()
