@@ -82,7 +82,13 @@ class Muon(torch.optim.Optimizer):
 		adam_betas=(0.8, 0.95),
 		adam_eps=1e-8,
 		muon_lr_multiplier=100.0,
+		muon_scale_eps=1e-9,
 	):
+		if not 0.0 <= adam_betas[0] < 1.0:
+			raise ValueError(f"Invalid beta parameter at index 0: {adam_betas[0]}")
+		if not 0.0 <= adam_betas[1] < 1.0:
+			raise ValueError(f"Invalid beta parameter at index 1: {adam_betas[1]}")
+
 		for group in param_groups:
 			assert "use_muon" in group, "Each param_group must have a 'use_muon' flag."
 			if group["use_muon"]:
@@ -91,6 +97,7 @@ class Muon(torch.optim.Optimizer):
 				group.setdefault("weight_decay", weight_decay)
 				group.setdefault("nesterov", nesterov)
 				group.setdefault("ns_steps", ns_steps)
+				group.setdefault("muon_scale_eps", muon_scale_eps)
 			else:
 				group.setdefault("lr", lr)
 				group.setdefault("betas", adam_betas)
@@ -130,7 +137,7 @@ class Muon(torch.optim.Optimizer):
 					if group["weight_decay"] > 0:
 						p.mul_(1 - group["lr"] * group["weight_decay"])
 
-					scale = max(1.0, g.size(-2) / g.size(-1)) ** 0.5
+					scale = max(1.0, g.size(-2) / (g.size(-1) + group["muon_scale_eps"])) ** 0.5
 					p.add_(g.view(original_shape), alpha=-group["lr"] * scale)
 				else:
 					if "exp_avg" not in state:
@@ -170,15 +177,22 @@ class DistMuon(torch.optim.Optimizer):
 		adam_betas=(0.8, 0.95),
 		adam_eps=1e-8,
 		muon_lr_multiplier=100.0,
+		muon_scale_eps=1e-9,
 	):
+		if not 0.0 <= adam_betas[0] < 1.0:
+			raise ValueError(f"Invalid beta parameter at index 0: {adam_betas[0]}")
+		if not 0.0 <= adam_betas[1] < 1.0:
+			raise ValueError(f"Invalid beta parameter at index 1: {adam_betas[1]}")
+
 		defaults = dict(
 			lr=lr,
 			weight_decay=weight_decay,
 			momentum=momentum,
 			nesterov=nesterov,
 			ns_steps=ns_steps,
-			adam_betas=adam_betas,
-			adam_eps=adam_eps,
+			betas=adam_betas,
+			eps=adam_eps,
+			muon_scale_eps=muon_scale_eps,
 		)
 
 		# Re-organize params to separate Muon vs AdamW, but keep track of source group settings
@@ -308,9 +322,9 @@ class DistMuon(torch.optim.Optimizer):
 				state["exp_avg_sq"],
 				group["lr"],
 				group["weight_decay"],
-				group["adam_betas"][0],
-				group["adam_betas"][1],
-				group["adam_eps"],
+				group["betas"][0],
+				group["betas"][1],
+				group["eps"],
 				state["step"],
 			)
 
@@ -340,7 +354,7 @@ class DistMuon(torch.optim.Optimizer):
 				if group["weight_decay"] > 0:
 					p.mul_(1 - group["lr"] * group["weight_decay"])
 
-				p.add_(g, alpha=-group["lr"] * max(1, p.size(-2) / p.size(-1)) ** 0.5)
+				p.add_(g, alpha=-group["lr"] * max(1, p.size(-2) / (p.size(-1) + group["muon_scale_eps"])) ** 0.5)
 				ag_input = p
 			else:
 				ag_input = group["zero_buffer"]

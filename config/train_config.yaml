@@ -1,5 +1,5 @@
 defaults:
-  - model: laptop
+  - model: medium
   - task: pretrain_zinc
   - _self_
 
@@ -17,17 +17,17 @@ model:
   max_length: ${model.block_size}
 
 training:
-  batch_size: 16
-  num_workers: 0
-  epochs: 40
+  batch_size: 64
+  num_workers: 12
+  epochs: 3
   optimizer:
-    lr: 2e-5
+    lr: 1e-6
     weight_decay: 0.01
     muon_lr_multiplier: 100.0
-  logger: "wandb" # "tensorboard" or "wandb"
+  logger: "tensorboard" # "tensorboard" or "wandb"
   compile: true
   dtype: "float16" # or "float16" or "float32"
-  grad_accum_steps: 1
+  grad_accum_steps: 16
   grad_clip: 1.0
   early_stopping_patience: 3
   electra_loss_weight: 50.0

@@ -30,7 +30,7 @@ class FeedForward(nn.Module):
 			self.swiglu_fn = TritonSwiGLUFunction.apply
 
 	def forward(self, x):
-		output = self.down_proj(self.swiglu_fn(self.up_proj(x), self.gate_proj(x)))
+		output = self.down_proj(self.swiglu_fn(self.gate_proj(x), self.up_proj(x)))
 		output = self.dropout(output)
 
 		return output
