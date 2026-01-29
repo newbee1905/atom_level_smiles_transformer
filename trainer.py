@@ -103,14 +103,14 @@ class Trainer:
 		]
 
 		if self.is_ddp:
-			self.optimizer = DistMuon(
+			self.optimizer = DistNorMuon(
 				param_groups,
 				lr=optimizer_cfg.lr,
 				weight_decay=optimizer_cfg.weight_decay,
 				muon_lr_multiplier=muon_lr_multiplier,
 			)
 		else:
-			self.optimizer = Muon(
+			self.optimizer = NorMuon(
 				param_groups,
 				lr=optimizer_cfg.lr,
 				weight_decay=optimizer_cfg.weight_decay,
