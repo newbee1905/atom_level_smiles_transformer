@@ -11,6 +11,7 @@ from transformers import get_linear_schedule_with_warmup, get_cosine_schedule_wi
 import itertools
 
 from optimizer import NorMuon, DistNorMuon
+from logger import UnifiedLogger
 
 class Trainer:
 	def __init__(
