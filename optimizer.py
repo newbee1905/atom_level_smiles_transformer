@@ -5,26 +5,29 @@ import torch.distributed as dist
 
 
 @torch.compile
-def zeropower_via_newtonschulz5(G: Tensor, steps: int) -> Tensor:
+def polar_express(G: Tensor, steps: int) -> Tensor:
 	"""
-	Newton-Schulz iteration to compute the zeroth power / orthogonalization of G.
-	Uses a quintic iteration to maximize the slope at zero.
+	Computes the orthogonal part of a matrix using a few steps of Newton-Schulz iteration.
+	This is for finding the U in X=UP where U is semi-orthogonal.
 	"""
 	assert G.ndim >= 2
-	a, b, c = (3.4445, -4.7750, 2.0315)
 	X = G.to(torch.float32)
 
 	if G.size(-2) > G.size(-1):
+		# For tall matrices, we work with the transpose to have a wide matrix
+		was_transposed = True
 		X = X.mT
+	else:
+		was_transposed = False
 
+	# Normalize for convergence
 	X = X / (X.norm(dim=(-2, -1), keepdim=True) + 1e-7)
 
 	for _ in range(steps):
-		A = X @ X.mT
-		B = b * A + c * A @ A
-		X = a * X + B @ X
+		# Newton-Schulz for wide matrices
+		X = 1.5 * X - 0.5 * X @ X.mT @ X
 
-	if G.size(-2) > G.size(-1):
+	if was_transposed:
 		X = X.mT
 	return X
 
@@ -66,9 +69,9 @@ def adamw_update_kernel(
 	p.addcdiv_(exp_avg, denom, value=-step_size)
 
 
-class Muon(torch.optim.Optimizer):
+class NorMuon(torch.optim.Optimizer):
 	"""
-	Single-device Muon with integrated Dense AdamW support.
+	Single-device NorMuon with integrated Dense AdamW support.
 	"""
 
 	def __init__(
@@ -82,13 +85,7 @@ class Muon(torch.optim.Optimizer):
 		adam_betas=(0.8, 0.95),
 		adam_eps=1e-8,
 		muon_lr_multiplier=100.0,
-		muon_scale_eps=1e-9,
 	):
-		if not 0.0 <= adam_betas[0] < 1.0:
-			raise ValueError(f"Invalid beta parameter at index 0: {adam_betas[0]}")
-		if not 0.0 <= adam_betas[1] < 1.0:
-			raise ValueError(f"Invalid beta parameter at index 1: {adam_betas[1]}")
-
 		for group in param_groups:
 			assert "use_muon" in group, "Each param_group must have a 'use_muon' flag."
 			if group["use_muon"]:
@@ -97,7 +94,6 @@ class Muon(torch.optim.Optimizer):
 				group.setdefault("weight_decay", weight_decay)
 				group.setdefault("nesterov", nesterov)
 				group.setdefault("ns_steps", ns_steps)
-				group.setdefault("muon_scale_eps", muon_scale_eps)
 			else:
 				group.setdefault("lr", lr)
 				group.setdefault("betas", adam_betas)
@@ -132,12 +128,12 @@ class Muon(torch.optim.Optimizer):
 					if p.ndim > 2:
 						g = g.view(g.size(0), -1)
 
-					g = zeropower_via_newtonschulz5(g, steps=group["ns_steps"])
+					g = polar_express(g, steps=group["ns_steps"])
 
 					if group["weight_decay"] > 0:
 						p.mul_(1 - group["lr"] * group["weight_decay"])
 
-					scale = max(1.0, g.size(-2) / (g.size(-1) + group["muon_scale_eps"])) ** 0.5
+					scale = max(1.0, g.size(-2) / g.size(-1)) ** 0.5
 					p.add_(g.view(original_shape), alpha=-group["lr"] * scale)
 				else:
 					if "exp_avg" not in state:
@@ -161,9 +157,9 @@ class Muon(torch.optim.Optimizer):
 		return loss
 
 
-class DistMuon(torch.optim.Optimizer):
+class DistNorMuon(torch.optim.Optimizer):
 	"""
-	Distributed Muon with integrated Dense AdamW.
+	Distributed NorMuon with integrated Dense AdamW.
 	"""
 
 	def __init__(
@@ -177,22 +173,15 @@ class DistMuon(torch.optim.Optimizer):
 		adam_betas=(0.8, 0.95),
 		adam_eps=1e-8,
 		muon_lr_multiplier=100.0,
-		muon_scale_eps=1e-9,
 	):
-		if not 0.0 <= adam_betas[0] < 1.0:
-			raise ValueError(f"Invalid beta parameter at index 0: {adam_betas[0]}")
-		if not 0.0 <= adam_betas[1] < 1.0:
-			raise ValueError(f"Invalid beta parameter at index 1: {adam_betas[1]}")
-
 		defaults = dict(
 			lr=lr,
 			weight_decay=weight_decay,
 			momentum=momentum,
 			nesterov=nesterov,
 			ns_steps=ns_steps,
-			betas=adam_betas,
-			eps=adam_eps,
-			muon_scale_eps=muon_scale_eps,
+			adam_betas=adam_betas,
+			adam_eps=adam_eps,
 		)
 
 		# Re-organize params to separate Muon vs AdamW, but keep track of source group settings
@@ -349,12 +338,12 @@ class DistMuon(torch.optim.Optimizer):
 				buf = state["momentum_buffer"]
 				buf.lerp_(g_avg, 1.0 - group["momentum"])
 				g = g_avg.lerp_(buf, group["momentum"]) if group["nesterov"] else buf
-				g = zeropower_via_newtonschulz5(g, steps=group["ns_steps"])
+				g = polar_express(g, steps=group["ns_steps"])
 
 				if group["weight_decay"] > 0:
 					p.mul_(1 - group["lr"] * group["weight_decay"])
 
-				p.add_(g, alpha=-group["lr"] * max(1, p.size(-2) / (p.size(-1) + group["muon_scale_eps"])) ** 0.5)
+				p.add_(g, alpha=-group["lr"] * max(1, p.size(-2) / p.size(-1)) ** 0.5)
 				ag_input = p
 			else:
 				ag_input = group["zero_buffer"]
